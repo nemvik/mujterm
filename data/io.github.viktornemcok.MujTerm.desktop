@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MujTerm
+Comment=Persistent project terminals with coding-agent status
+Exec=mujterm
+Icon=io.github.viktornemcok.MujTerm
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;tmux;codex;claude;
+StartupNotify=true
