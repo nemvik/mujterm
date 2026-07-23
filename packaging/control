@@ -1,0 +1,10 @@
+Package: mujterm
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: Viktor Nemcok
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, tmux, git
+Description: Project-oriented terminal with coding-agent status
+ MujTerm is a native GTK/VTE terminal that groups persistent tmux sessions by
+ project and shows live Codex and Claude Code status in its sidebar.

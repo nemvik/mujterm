@@ -1,0 +1,101 @@
+# MujTerm
+
+MujTerm is a native Linux terminal that keeps project terminals and coding-agent
+status visible in one sidebar. It uses GTK 3 and VTE for terminal rendering and
+an isolated tmux server so terminal processes survive closing the window.
+
+## Features
+
+- Persistent terminal sessions grouped by project.
+- Independent full-workspace terminal pages and a modal keyboard navigation mode.
+- Nested horizontal and vertical split panes with draggable dividers.
+- Mouse-wheel scrollback in shells and full-screen Codex/Claude interfaces.
+- Live current-directory and Git branch labels.
+- Live per-session CPU and resident-memory totals for the complete process tree.
+- Attention queue for agents waiting on input, with one-key navigation.
+- Local service radar with clickable listening ports and process controls.
+- Live dependency map inferred from TCP connections between terminal process trees.
+- Persistent project timeline for agent, Git, service, terminal, and layout events.
+- Privacy-conscious agent handoff cards with Git, service, resource, and activity context.
+- Codex ↔ Claude solution races on isolated Git branches and worktrees, with a comparison dashboard.
+- One-click terminal switching, duplication from the live working directory, and closing.
+- Drag-and-drop project and terminal organization.
+- Exact Codex and Claude Code states: working, needs input, ready, and error.
+- Safe, opt-in lifecycle hooks that never approve actions or record prompts.
+- Automatic clean-shell recovery after a machine reboot.
+
+## Run from the repository
+
+Ubuntu 22.04 already provides the runtime packages used by this project. On a
+fresh Debian or Ubuntu installation, install them with:
+
+```sh
+sudo apt install python3 python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 tmux git
+```
+
+Then run:
+
+```sh
+./bin/mujterm
+```
+
+MujTerm stores its model under the normal XDG data directories and uses its own
+tmux socket. It does not import, modify, or terminate unrelated tmux sessions.
+
+## Agent status integration
+
+Select the gear button and choose **Enable**. MujTerm merges its handlers into
+the existing Claude Code and Codex hook configuration after making a timestamped
+backup. The handlers only become active for processes inheriting a
+`MUJTERM_TERMINAL_ID`, so agents launched in other terminals are ignored.
+
+Codex requires one additional safety step: launch Codex in MujTerm, enter
+`/hooks`, review the MujTerm command, and trust it. Integrations can be removed
+from the same gear dialog without touching other hooks.
+
+## Keyboard shortcuts
+
+- `Ctrl+Shift+T`: new full-workspace terminal in the active terminal's current directory
+- `Ctrl+Shift+Right`: split the active pane to the right
+- `Ctrl+Shift+Down`: split the active pane downward
+- `Ctrl+Shift+A`: jump to the next agent waiting for input
+- `Ctrl+Space`: enter or leave keyboard mode
+- `Ctrl+Shift+C` / `Ctrl+Shift+V`: copy / paste
+- `Ctrl++` / `Ctrl+-`: terminal font zoom
+- `Ctrl+Q`: close the window while leaving tmux sessions running
+
+Detected localhost ports appear below their terminal. Click a port to open it in
+the default browser; right-click to copy its URL or stop the owning process after
+confirmation. The clock button in the header opens the active project's timeline.
+
+The `⇄` button creates a reviewable handoff card and can launch either agent in
+a new terminal. The `A/B` button gives Codex and Claude the same task in separate
+Git worktrees, opens them side by side, and keeps their diff/resource comparison
+available afterward. Worktrees are stored below MujTerm's XDG data directory;
+MujTerm does not automatically delete race branches or worktrees containing work.
+The network button shows dependencies inferred from live TCP connections. It
+does not inspect payloads or terminal output.
+
+Drag with the left mouse button to select terminal text, then press
+`Ctrl+Shift+C` or right-click and choose **Copy**. The terminal context menu also
+provides paste and select-all actions.
+
+Mouse scrolling is handled by tmux. In a regular shell it enters scrollback mode;
+scroll back to the bottom or press `q` to return immediately. Applications that
+support mouse input, including full-screen agent interfaces, receive the wheel
+events directly.
+
+New terminals always open as their own full workspace; only the explicit split
+actions divide the current workspace. In keyboard mode use `h/j/k/l` to move
+between panes, `[` and `]` to switch workspaces, `n` for a new full workspace,
+`v` to split right, `s` to split down, `x` to close, `a` for the attention queue,
+and `q` or `Esc` to leave the mode.
+
+## Tests and packaging
+
+```sh
+make check
+make deb
+```
+
+The Debian package is written to `dist/mujterm_0.1.0_all.deb`.
