@@ -30,6 +30,13 @@ class Project:
 
 
 @dataclass(frozen=True)
+class SshConnection:
+    project_id: str
+    target: str
+    port: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class TerminalSession:
     id: str
     project_id: Optional[str]
@@ -37,6 +44,14 @@ class TerminalSession:
     tmux_name: str
     initial_cwd: str
     last_cwd: str
+    position: int
+
+
+@dataclass(frozen=True)
+class ToolboxCommand:
+    id: str
+    name: str
+    command: str
     position: int
 
 

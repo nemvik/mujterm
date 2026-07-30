@@ -5,7 +5,14 @@ import uuid
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .models import AgentRace, Project, TerminalSession, TimelineEvent
+from .models import (
+    AgentRace,
+    Project,
+    SshConnection,
+    TerminalSession,
+    TimelineEvent,
+    ToolboxCommand,
+)
 from .paths import data_dir, ensure_private_dir
 
 
@@ -20,6 +27,12 @@ CREATE TABLE IF NOT EXISTS projects (
     collapsed INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS ssh_projects (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    target TEXT NOT NULL,
+    port INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS terminals (
     id TEXT PRIMARY KEY,
     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
@@ -32,6 +45,16 @@ CREATE TABLE IF NOT EXISTS terminals (
 
 CREATE INDEX IF NOT EXISTS terminals_project_position
 ON terminals(project_id, position);
+
+CREATE TABLE IF NOT EXISTS toolbox_commands (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    command TEXT NOT NULL,
+    position INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS toolbox_commands_position
+ON toolbox_commands(position);
 
 CREATE TABLE IF NOT EXISTS timeline_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +120,12 @@ class Database:
 
     def find_project_by_root(self, root_path: str) -> Optional[Project]:
         row = self.connection.execute(
-            "SELECT * FROM projects WHERE root_path = ?", (root_path,)
+            """
+            SELECT projects.* FROM projects
+            LEFT JOIN ssh_projects ON ssh_projects.project_id = projects.id
+            WHERE projects.root_path = ? AND ssh_projects.project_id IS NULL
+            """,
+            (root_path,),
         ).fetchone()
         return self._project(row) if row else None
 
@@ -114,6 +142,56 @@ class Database:
         )
         self.connection.commit()
         return project
+
+    def create_ssh_project(
+        self,
+        name: str,
+        target: str,
+        port: Optional[int],
+        root_path: str,
+    ) -> Project:
+        name = name.strip()
+        if not name:
+            raise ValueError("Project name is required.")
+        target, port = self._validate_ssh_connection(target, port)
+        project = Project(
+            id=str(uuid.uuid4()),
+            name=name,
+            root_path=root_path,
+            position=self._next_position("projects", None),
+        )
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO projects(id, name, root_path, position, collapsed) VALUES (?, ?, ?, ?, 0)",
+                (project.id, project.name, project.root_path, project.position),
+            )
+            self.connection.execute(
+                "INSERT INTO ssh_projects(project_id, target, port) VALUES (?, ?, ?)",
+                (project.id, target, port),
+            )
+        return project
+
+    def get_ssh_connection(self, project_id: str) -> Optional[SshConnection]:
+        row = self.connection.execute(
+            "SELECT * FROM ssh_projects WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        return self._ssh_connection(row) if row else None
+
+    def update_ssh_connection(
+        self, project_id: str, target: str, port: Optional[int]
+    ) -> SshConnection:
+        target, port = self._validate_ssh_connection(target, port)
+        cursor = self.connection.execute(
+            "UPDATE ssh_projects SET target = ?, port = ? WHERE project_id = ?",
+            (target, port, project_id),
+        )
+        self.connection.commit()
+        if cursor.rowcount == 0:
+            raise ValueError("SSH project no longer exists.")
+        connection = self.get_ssh_connection(project_id)
+        if not connection:
+            raise ValueError("SSH project no longer exists.")
+        return connection
 
     def rename_project(self, project_id: str, name: str) -> None:
         self.connection.execute(
@@ -261,6 +339,64 @@ class Database:
         if terminal:
             self.normalize_terminal_positions(terminal.project_id)
 
+    def list_toolbox_commands(self) -> list[ToolboxCommand]:
+        rows = self.connection.execute(
+            "SELECT * FROM toolbox_commands ORDER BY position, name COLLATE NOCASE"
+        ).fetchall()
+        return [self._toolbox_command(row) for row in rows]
+
+    def get_toolbox_command(self, command_id: str) -> Optional[ToolboxCommand]:
+        row = self.connection.execute(
+            "SELECT * FROM toolbox_commands WHERE id = ?", (command_id,)
+        ).fetchone()
+        return self._toolbox_command(row) if row else None
+
+    def create_toolbox_command(self, name: str, command: str) -> ToolboxCommand:
+        name, command = self._validate_toolbox_command(name, command)
+        item = ToolboxCommand(
+            id=str(uuid.uuid4()),
+            name=name,
+            command=command,
+            position=self._next_position("toolbox_commands", None),
+        )
+        try:
+            self.connection.execute(
+                "INSERT INTO toolbox_commands(id, name, command, position) VALUES (?, ?, ?, ?)",
+                (item.id, item.name, item.command, item.position),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as exc:
+            self.connection.rollback()
+            raise ValueError(f'A command named "{item.name}" already exists.') from exc
+        return item
+
+    def update_toolbox_command(
+        self, command_id: str, name: str, command: str
+    ) -> ToolboxCommand:
+        name, command = self._validate_toolbox_command(name, command)
+        try:
+            cursor = self.connection.execute(
+                "UPDATE toolbox_commands SET name = ?, command = ? WHERE id = ?",
+                (name, command, command_id),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as exc:
+            self.connection.rollback()
+            raise ValueError(f'A command named "{name}" already exists.') from exc
+        if cursor.rowcount == 0:
+            raise ValueError("Toolbox command no longer exists.")
+        item = self.get_toolbox_command(command_id)
+        if not item:
+            raise ValueError("Toolbox command no longer exists.")
+        return item
+
+    def delete_toolbox_command(self, command_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM toolbox_commands WHERE id = ?", (command_id,)
+        )
+        self.connection.commit()
+        self._normalize_toolbox_positions()
+
     def append_timeline_event(
         self,
         project_id: Optional[str],
@@ -366,6 +502,14 @@ class Database:
                     (position, terminal.id),
                 )
 
+    def _normalize_toolbox_positions(self) -> None:
+        with self.connection:
+            for position, item in enumerate(self.list_toolbox_commands()):
+                self.connection.execute(
+                    "UPDATE toolbox_commands SET position = ? WHERE id = ?",
+                    (position, item.id),
+                )
+
     def _next_position(self, table: str, _group: Optional[str]) -> int:
         row = self.connection.execute(
             f"SELECT COALESCE(MAX(position), -1) + 1 AS next_position FROM {table}"
@@ -395,6 +539,14 @@ class Database:
         )
 
     @staticmethod
+    def _ssh_connection(row: sqlite3.Row) -> SshConnection:
+        return SshConnection(
+            project_id=row["project_id"],
+            target=row["target"],
+            port=row["port"],
+        )
+
+    @staticmethod
     def _terminal(row: sqlite3.Row) -> TerminalSession:
         return TerminalSession(
             id=row["id"],
@@ -405,6 +557,39 @@ class Database:
             last_cwd=row["last_cwd"],
             position=row["position"],
         )
+
+    @staticmethod
+    def _toolbox_command(row: sqlite3.Row) -> ToolboxCommand:
+        return ToolboxCommand(
+            id=row["id"],
+            name=row["name"],
+            command=row["command"],
+            position=row["position"],
+        )
+
+    @staticmethod
+    def _validate_toolbox_command(name: str, command: str) -> tuple[str, str]:
+        name = name.strip()
+        if not name:
+            raise ValueError("Name is required.")
+        if not command.strip():
+            raise ValueError("Command is required.")
+        if "\n" in command or "\r" in command:
+            raise ValueError("Commands must fit on one line.")
+        return name, command
+
+    @staticmethod
+    def _validate_ssh_connection(
+        target: str, port: Optional[int]
+    ) -> tuple[str, Optional[int]]:
+        target = target.strip()
+        if not target:
+            raise ValueError("SSH target is required.")
+        if target.startswith("-") or any(character.isspace() for character in target):
+            raise ValueError("SSH target must be a host, user@host, or SSH config alias.")
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("SSH port must be between 1 and 65535.")
+        return target, port
 
     @staticmethod
     def _agent_race(row: sqlite3.Row) -> AgentRace:

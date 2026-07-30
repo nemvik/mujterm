@@ -7,6 +7,7 @@ an isolated tmux server so terminal processes survive closing the window.
 ## Features
 
 - Persistent terminal sessions grouped by project.
+- Persistent SSH projects backed by standard OpenSSH configuration and ssh-agent.
 - Independent full-workspace terminal pages and a modal keyboard navigation mode.
 - Nested horizontal and vertical split panes with draggable dividers.
 - Mouse-wheel scrollback in shells and full-screen Codex/Claude interfaces.
@@ -20,6 +21,7 @@ an isolated tmux server so terminal processes survive closing the window.
 - Codex ↔ Claude solution races on isolated Git branches and worktrees, with a comparison dashboard.
 - One-click terminal switching, duplication from the live working directory, and closing.
 - Drag-and-drop project and terminal organization.
+- A global command toolbox for saving and inserting named one-line commands.
 - Exact Codex and Claude Code states: working, needs input, ready, and error.
 - Safe, opt-in lifecycle hooks that never approve actions or record prompts.
 - Automatic clean-shell recovery after a machine reboot.
@@ -30,7 +32,7 @@ Ubuntu 22.04 already provides the runtime packages used by this project. On a
 fresh Debian or Ubuntu installation, install them with:
 
 ```sh
-sudo apt install python3 python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 tmux git
+sudo apt install python3 python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 tmux git openssh-client
 ```
 
 Then run:
@@ -79,6 +81,20 @@ does not inspect payloads or terminal output.
 Drag with the left mouse button to select terminal text, then press
 `Ctrl+Shift+C` or right-click and choose **Copy**. The terminal context menu also
 provides paste and select-all actions.
+
+Select **CMD** in the header to open the command toolbox, then choose
+**+ ADD COMMAND**. Add a name and a single-line command, then click the saved
+item to insert its text into the active terminal. Toolbox clicks never press
+Enter, so the command remains editable at the prompt until you run it yourself.
+Saved commands are available across all projects and are stored as plain text in
+MujTerm's local state database.
+
+Select **SSH** in the header to create a persistent VPS project. Enter a project
+name, an SSH target such as `root@example.com` (or an alias from
+`~/.ssh/config`), and an optional port. The first terminal connects immediately,
+and every new, duplicated, split, restored, or restarted terminal in that project
+uses the same connection. Host-key and password prompts appear normally inside
+the terminal; MujTerm never stores passwords or private keys.
 
 Mouse scrolling is handled by tmux. In a regular shell it enters scrollback mode;
 scroll back to the bottom or press `q` to return immediately. Applications that

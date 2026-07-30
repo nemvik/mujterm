@@ -115,6 +115,17 @@ class TmuxBackend:
         if result.returncode != 0:
             raise TmuxError(result.stderr.strip() or "Could not start terminal command")
 
+    def send_text(self, tmux_name: str, text: str) -> None:
+        """Insert literal single-line text without pressing Enter."""
+        if "\n" in text or "\r" in text:
+            raise TmuxError("Terminal text must fit on one line")
+        result = self._run(
+            ["send-keys", "-t", f"={tmux_name}", "-l", "--", text],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise TmuxError(result.stderr.strip() or "Could not insert terminal text")
+
     def list_panes(self) -> dict[str, PaneInfo]:
         separator = "\x1f"
         format_string = separator.join(

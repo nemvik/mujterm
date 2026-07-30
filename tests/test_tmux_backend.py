@@ -25,6 +25,33 @@ class TmuxBackendTests(unittest.TestCase):
             self.assertEqual(literal[5], "codex 'fix $HOME; don'\"'\"'t execute'")
             self.assertEqual(run.call_args_list[1].args[0][-1], "Enter")
 
+    def test_send_text_inserts_literal_text_without_pressing_enter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            success = CompletedProcess([], 0, "", "")
+            text = "printf '%s' \"$HOME\" | sed 's/a/b/'; true"
+            with patch.object(backend, "_run", return_value=success) as run:
+                backend.send_text("mujterm-test", text)
+
+            run.assert_called_once_with(
+                ["send-keys", "-t", "=mujterm-test", "-l", "--", text],
+                check=False,
+            )
+
+    def test_send_text_rejects_multiple_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            with patch.object(backend, "_run") as run:
+                with self.assertRaisesRegex(TmuxError, "one line"):
+                    backend.send_text("mujterm-test", "pwd\nls")
+                run.assert_not_called()
+
     def test_existing_config_enables_mouse_without_losing_custom_options(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

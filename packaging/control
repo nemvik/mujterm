@@ -4,7 +4,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Maintainer: Viktor Nemcok
-Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, tmux, git
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, tmux, git, openssh-client
 Description: Project-oriented terminal with coding-agent status
  MujTerm is a native GTK/VTE terminal that groups persistent tmux sessions by
  project and shows live Codex and Claude Code status in its sidebar.

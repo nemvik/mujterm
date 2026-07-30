@@ -30,8 +30,10 @@ from .models import (
     AgentStatus,
     ListeningService,
     Project,
+    SshConnection,
     TerminalSession,
     TerminalSnapshot,
+    ToolboxCommand,
 )
 from .tmux_backend import TmuxBackend, TmuxError
 from .worktrees import WorktreeError, compare_worktree, create_race_worktrees
@@ -121,6 +123,16 @@ CSS = b"""
   font-size: 0.72em;
 }
 .project-alert { color: #ffd76a; font-family: Monospace; font-weight: bold; }
+.project-ssh {
+  color: #bbf7d0;
+  background: rgba(134, 239, 172, 0.10);
+  border: 1px solid rgba(134, 239, 172, 0.38);
+  border-radius: 8px;
+  padding: 1px 5px;
+  font-family: Monospace;
+  font-size: 0.68em;
+  font-weight: bold;
+}
 .mujterm-terminal-row {
   color: #c9d8e8;
   background: rgba(14, 24, 39, 0.72);
@@ -175,6 +187,36 @@ CSS = b"""
   font-size: 0.78em;
 }
 .attention-item:hover { background: rgba(253, 230, 138, 0.18); border-color: #fde68a; }
+.toolbox-popover { padding: 12px; }
+.toolbox-title { color: #f1f5f9; font-family: Monospace; font-weight: bold; }
+.toolbox-target { color: #7dd3fc; font-family: Monospace; font-size: 0.72em; }
+.toolbox-row {
+  padding: 3px;
+  background: rgba(20, 34, 52, 0.76);
+  border: 1px solid rgba(84, 126, 157, 0.28);
+  border-radius: 7px;
+}
+.toolbox-insert {
+  padding: 5px 7px;
+  color: #e5edf6;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.toolbox-insert:hover { background: rgba(61, 211, 235, 0.11); }
+.toolbox-add {
+  padding: 7px 10px;
+  color: #061923;
+  background: #67e8f9;
+  border-color: #67e8f9;
+  font-family: Monospace;
+  font-weight: bold;
+}
+.toolbox-add:hover { color: #020617; background: #a5f3fc; border-color: #a5f3fc; }
+.toolbox-name { color: #f8fafc; font-weight: bold; }
+.toolbox-command { color: #8ca8bf; font-family: Monospace; font-size: 0.76em; }
+.toolbox-empty { padding: 18px 8px; color: #7891a8; }
+.toolbox-error { color: #fda4af; font-size: 0.82em; }
 .timeline-kind { color: #c4b5fd; font-family: Monospace; font-size: 0.76em; }
 .timeline-summary { color: #f5f3ff; }
 .timeline-meta { color: #9ca3b8; font-family: Monospace; font-size: 0.75em; }
@@ -266,6 +308,7 @@ CSS = b"""
   border-color: rgba(216, 180, 254, 0.38);
 }
 .project-alert { color: #fde68a; }
+.project-ssh { color: #bbf7d0; border-color: rgba(134, 239, 172, 0.48); }
 .mujterm-terminal-row {
   color: #f3f4f6;
   background: #171c2e;
@@ -286,6 +329,14 @@ CSS = b"""
 .terminal-row-action { color: #b9c1d9; }
 .terminal-row-action:hover { color: #a5f3fc; background: rgba(165, 243, 252, 0.13); }
 .terminal-row-close:hover { color: #fda4af; background: rgba(253, 164, 175, 0.14); }
+.toolbox-title, .toolbox-name { color: #ffffff; }
+.toolbox-target { color: #a5f3fc; }
+.toolbox-row { background: #171c2e; border-color: #414966; }
+.toolbox-command { color: #b6c2d9; }
+.toolbox-insert:hover { background: rgba(165, 243, 252, 0.12); }
+.toolbox-add { color: #111827; background: #a5f3fc; border-color: #a5f3fc; }
+.toolbox-add:hover { color: #020617; background: #cffafe; border-color: #cffafe; }
+.toolbox-empty { color: #a6a7c5; }
 .status-working { color: #bae6fd; background: rgba(125, 211, 252, 0.14); border-color: rgba(125, 211, 252, 0.48); }
 .status-action { color: #fef3c7; background: rgba(253, 230, 138, 0.14); border-color: rgba(253, 230, 138, 0.52); }
 .status-ready { color: #bbf7d0; background: rgba(134, 239, 172, 0.13); border-color: rgba(134, 239, 172, 0.48); }
@@ -527,12 +578,12 @@ class TerminalView(Gtk.Box):
 
     def _on_pointer_event(self, _widget: Gtk.Widget, event: Gdk.Event) -> bool:
         """Keep plain left-button dragging available for native VTE selection."""
-        is_left_button = getattr(event, "button", 0) == 1
-        is_left_drag = bool(
-            getattr(event, "state", 0) & Gdk.ModifierType.BUTTON1_MASK
-        )
+        has_button, button = event.get_button()
+        has_state, state = event.get_state()
+        is_left_button = has_button and button == 1
+        is_left_drag = has_state and bool(state & Gdk.ModifierType.BUTTON1_MASK)
         if is_left_button or is_left_drag:
-            event.state = getattr(event, "state", 0) | Gdk.ModifierType.SHIFT_MASK
+            event.state = state | Gdk.ModifierType.SHIFT_MASK
         return False
 
     def _on_button_press(
@@ -733,6 +784,16 @@ class ProjectSection(Gtk.Box):
         self.chevron.get_style_context().add_class("project-chevron")
         title = Gtk.Label(label=project.name if project else "Ungrouped", xalign=0)
         title.get_style_context().add_class("mujterm-project-title")
+        ssh_connection = (
+            window.database.get_ssh_connection(project.id) if project else None
+        )
+        ssh_badge: Optional[Gtk.Label] = None
+        if ssh_connection:
+            ssh_badge = Gtk.Label(label="SSH")
+            ssh_badge.get_style_context().add_class("project-ssh")
+            ssh_badge.set_tooltip_text(
+                window._ssh_connection_label(ssh_connection)
+            )
         count = Gtk.Label(label=str(len(terminals)))
         count.get_style_context().add_class("project-count")
         self.alert = Gtk.Label()
@@ -751,6 +812,8 @@ class ProjectSection(Gtk.Box):
         add_button.connect("clicked", lambda *_args: self.window.create_terminal(self.project_id))
         header_box.pack_start(self.chevron, False, False, 0)
         header_box.pack_start(title, True, True, 0)
+        if ssh_badge:
+            header_box.pack_start(ssh_badge, False, False, 0)
         header_box.pack_start(self.alert, False, False, 0)
         header_box.pack_start(count, False, False, 0)
         if rename_button:
@@ -916,6 +979,10 @@ class MainWindow(Gtk.ApplicationWindow):
         project_button.get_style_context().add_class("hud-button")
         project_button.set_tooltip_text("Open project")
         project_button.connect("clicked", lambda *_args: self.open_project_dialog())
+        ssh_button = Gtk.Button(label="SSH")
+        ssh_button.get_style_context().add_class("hud-button")
+        ssh_button.set_tooltip_text("New SSH project")
+        ssh_button.connect("clicked", lambda *_args: self.open_ssh_project_dialog())
         terminal_button = Gtk.Button.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON)
         terminal_button.get_style_context().add_class("hud-button")
         terminal_button.set_tooltip_text("New terminal (Ctrl+Shift+T)")
@@ -930,6 +997,10 @@ class MainWindow(Gtk.ApplicationWindow):
         split_down.get_style_context().add_class("split-button")
         split_down.set_tooltip_text("Split down")
         split_down.connect("clicked", lambda *_args: self.split_active(Gtk.Orientation.VERTICAL))
+        self.toolbox_button = Gtk.MenuButton(label="CMD")
+        self.toolbox_button.get_style_context().add_class("hud-button")
+        self.toolbox_button.set_tooltip_text("Command toolbox")
+        self._build_toolbox_popover()
         timeline_button = Gtk.Button.new_from_icon_name("document-open-recent-symbolic", Gtk.IconSize.BUTTON)
         timeline_button.get_style_context().add_class("hud-button")
         timeline_button.set_tooltip_text("Project timeline")
@@ -955,9 +1026,11 @@ class MainWindow(Gtk.ApplicationWindow):
         settings_button.set_tooltip_text("Agent integrations")
         settings_button.connect("clicked", lambda *_args: self.show_integration_dialog())
         header.pack_start(project_button)
+        header.pack_start(ssh_button)
         header.pack_start(terminal_button)
         header.pack_start(split_right)
         header.pack_start(split_down)
+        header.pack_start(self.toolbox_button)
         header.pack_end(settings_button)
         header.pack_end(timeline_button)
         header.pack_end(map_button)
@@ -971,6 +1044,216 @@ class MainWindow(Gtk.ApplicationWindow):
         split_right.add_accelerator("clicked", accelerator, Gdk.KEY_Right, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
         split_down.add_accelerator("clicked", accelerator, Gdk.KEY_Down, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
         self.keyboard_mode_button.add_accelerator("clicked", accelerator, Gdk.KEY_space, Gdk.ModifierType.CONTROL_MASK, Gtk.AccelFlags.VISIBLE)
+
+    def _build_toolbox_popover(self) -> None:
+        self.toolbox_popover = Gtk.Popover.new(self.toolbox_button)
+        self.toolbox_popover.set_position(Gtk.PositionType.BOTTOM)
+        self.toolbox_popover.set_size_request(390, -1)
+        self.toolbox_popover.connect("show", self._toolbox_popover_shown)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.set_border_width(12)
+        content.get_style_context().add_class("toolbox-popover")
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(label="// COMMAND TOOLBOX", xalign=0)
+        title.get_style_context().add_class("toolbox-title")
+        header.pack_start(title, True, True, 0)
+
+        self.toolbox_target = Gtk.Label(xalign=0)
+        self.toolbox_target.get_style_context().add_class("toolbox-target")
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_height(72)
+        scrolled.set_max_content_height(320)
+        scrolled.set_propagate_natural_height(True)
+        self.toolbox_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        scrolled.add(self.toolbox_list)
+
+        self.toolbox_add_button = Gtk.Button(label="+ ADD COMMAND")
+        self.toolbox_add_button.get_style_context().add_class("toolbox-add")
+        self.toolbox_add_button.set_tooltip_text("Save a command in the toolbox")
+        self.toolbox_add_button.connect(
+            "clicked", lambda *_args: self._show_toolbox_editor()
+        )
+
+        content.pack_start(header, False, False, 0)
+        content.pack_start(self.toolbox_target, False, False, 0)
+        content.pack_start(scrolled, True, True, 0)
+        content.pack_start(self.toolbox_add_button, False, False, 0)
+        self.toolbox_popover.add(content)
+        self.toolbox_button.set_popover(self.toolbox_popover)
+
+    def _toolbox_popover_shown(self, *_args: Any) -> None:
+        self._rebuild_toolbox()
+
+    def _rebuild_toolbox(self) -> None:
+        for child in self.toolbox_list.get_children():
+            self.toolbox_list.remove(child)
+
+        terminal = (
+            self.database.get_terminal(self.active_terminal_id)
+            if self.active_terminal_id
+            else None
+        )
+        if terminal:
+            self.toolbox_target.set_text(f"TARGET // {terminal.name}")
+            self.toolbox_target.set_tooltip_text(terminal.last_cwd)
+        else:
+            self.toolbox_target.set_text("TARGET // NO ACTIVE TERMINAL")
+            self.toolbox_target.set_tooltip_text("Select a terminal to insert commands")
+
+        commands = self.database.list_toolbox_commands()
+        if not commands:
+            empty = Gtk.Label(label="No saved commands yet.", xalign=0)
+            empty.get_style_context().add_class("toolbox-empty")
+            self.toolbox_list.pack_start(empty, False, False, 0)
+
+        for item in commands:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
+            row.get_style_context().add_class("toolbox-row")
+
+            insert = Gtk.Button()
+            insert.get_style_context().add_class("toolbox-insert")
+            insert.set_relief(Gtk.ReliefStyle.NONE)
+            insert.set_sensitive(terminal is not None)
+            insert.set_tooltip_text(item.command)
+            insert.connect(
+                "clicked",
+                lambda _button, command=item: self._insert_toolbox_command(command),
+            )
+            labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            name = Gtk.Label(label=item.name, xalign=0)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            name.get_style_context().add_class("toolbox-name")
+            preview = Gtk.Label(label=item.command, xalign=0)
+            preview.set_ellipsize(Pango.EllipsizeMode.END)
+            preview.set_max_width_chars(42)
+            preview.get_style_context().add_class("toolbox-command")
+            labels.pack_start(name, False, False, 0)
+            labels.pack_start(preview, False, False, 0)
+            insert.add(labels)
+
+            edit = Gtk.Button.new_from_icon_name(
+                "document-edit-symbolic", Gtk.IconSize.MENU
+            )
+            edit.get_style_context().add_class("terminal-row-action")
+            edit.set_tooltip_text(f"Edit {item.name}")
+            edit.connect(
+                "clicked",
+                lambda _button, command=item: self._show_toolbox_editor(command),
+            )
+            delete = Gtk.Button.new_from_icon_name(
+                "edit-delete-symbolic", Gtk.IconSize.MENU
+            )
+            delete.get_style_context().add_class("terminal-row-action")
+            delete.get_style_context().add_class("terminal-row-close")
+            delete.set_tooltip_text(f"Delete {item.name}")
+            delete.connect(
+                "clicked",
+                lambda _button, command=item: self._delete_toolbox_command(command),
+            )
+
+            row.pack_start(insert, True, True, 0)
+            row.pack_end(delete, False, False, 0)
+            row.pack_end(edit, False, False, 0)
+            self.toolbox_list.pack_start(row, False, False, 0)
+
+        self.toolbox_list.show_all()
+
+    def _show_toolbox_editor(
+        self, item: Optional[ToolboxCommand] = None
+    ) -> None:
+        self.toolbox_popover.popdown()
+        title = "Edit toolbox command" if item else "Add toolbox command"
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dialog.add_buttons(
+            "Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.ACCEPT
+        )
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        content = dialog.get_content_area()
+        content.set_spacing(7)
+        content.set_border_width(12)
+
+        content.add(Gtk.Label(label="Name", xalign=0))
+        name_entry = Gtk.Entry(text=item.name if item else "")
+        name_entry.set_max_length(80)
+        name_entry.set_placeholder_text("Start development server")
+        name_entry.set_activates_default(True)
+        content.add(name_entry)
+
+        content.add(Gtk.Label(label="Command", xalign=0))
+        command_entry = Gtk.Entry(text=item.command if item else "")
+        command_entry.set_width_chars(48)
+        command_entry.set_placeholder_text("pnpm dev")
+        command_entry.set_activates_default(True)
+        content.add(command_entry)
+
+        error = Gtk.Label(xalign=0)
+        error.set_line_wrap(True)
+        error.get_style_context().add_class("toolbox-error")
+        content.add(error)
+
+        dialog.show_all()
+        error.hide()
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.ACCEPT:
+                break
+            try:
+                if item:
+                    self.database.update_toolbox_command(
+                        item.id, name_entry.get_text(), command_entry.get_text()
+                    )
+                else:
+                    self.database.create_toolbox_command(
+                        name_entry.get_text(), command_entry.get_text()
+                    )
+                break
+            except ValueError as exc:
+                error.set_text(str(exc))
+                error.show()
+                name_entry.grab_focus()
+
+        dialog.destroy()
+        GLib.idle_add(self._reopen_toolbox)
+
+    def _delete_toolbox_command(self, item: ToolboxCommand) -> None:
+        self.toolbox_popover.popdown()
+        if self._confirm(
+            "Delete toolbox command?",
+            f'"{item.name}" will be removed from the command toolbox.',
+        ):
+            self.database.delete_toolbox_command(item.id)
+        GLib.idle_add(self._reopen_toolbox)
+
+    def _reopen_toolbox(self) -> bool:
+        self._rebuild_toolbox()
+        self.toolbox_popover.popup()
+        return False
+
+    def _insert_toolbox_command(self, item: ToolboxCommand) -> None:
+        terminal = (
+            self.database.get_terminal(self.active_terminal_id)
+            if self.active_terminal_id
+            else None
+        )
+        if not terminal:
+            self.toolbox_popover.popdown()
+            self._error("No active terminal", "Select a terminal before inserting a command.")
+            return
+        try:
+            self.backend.send_text(terminal.tmux_name, item.command)
+        except TmuxError as exc:
+            self.toolbox_popover.popdown()
+            self._error("Could not insert command", str(exc))
+            return
+        self.toolbox_popover.popdown()
+        self._terminal_input(terminal.id)
+        view = self.terminal_views.get(terminal.id)
+        if view:
+            view.terminal.grab_focus()
 
     def _build_body(self) -> None:
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1091,6 +1374,12 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.backend.create_session(terminal, fallback)
                 if fallback != terminal.last_cwd:
                     self.database.update_terminal_cwd(terminal.id, fallback)
+                try:
+                    self._start_project_connection(terminal)
+                except TmuxError as exc:
+                    self._record_event(
+                        terminal, "terminal", f"SSH reconnect failed: {exc}"
+                    )
 
     def _recovery_cwd(self, terminal: TerminalSession) -> str:
         if Path(terminal.last_cwd).is_dir():
@@ -1147,6 +1436,145 @@ class MainWindow(Gtk.ApplicationWindow):
                     self.rebuild_sidebar()
         dialog.destroy()
 
+    def open_ssh_project_dialog(self, project_id: Optional[str] = None) -> None:
+        project = self.database.get_project(project_id) if project_id else None
+        connection = (
+            self.database.get_ssh_connection(project_id) if project_id else None
+        )
+        if project_id and (not project or not connection):
+            return
+
+        title = f"Edit SSH Connection — {project.name}" if project else "New SSH Project"
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dialog.add_buttons(
+            "Cancel",
+            Gtk.ResponseType.CANCEL,
+            "Save" if project else "Connect",
+            Gtk.ResponseType.ACCEPT,
+        )
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        content = dialog.get_content_area()
+        content.set_spacing(7)
+        content.set_border_width(12)
+
+        name_entry: Optional[Gtk.Entry] = None
+        if not project:
+            content.add(Gtk.Label(label="Project name", xalign=0))
+            name_entry = Gtk.Entry()
+            name_entry.set_placeholder_text("Production VPS")
+            name_entry.set_max_length(80)
+            name_entry.set_activates_default(True)
+            content.add(name_entry)
+
+        content.add(Gtk.Label(label="SSH target", xalign=0))
+        target_entry = Gtk.Entry(text=connection.target if connection else "")
+        target_entry.set_placeholder_text("root@example.com or my-vps")
+        target_entry.set_activates_default(True)
+        content.add(target_entry)
+
+        content.add(Gtk.Label(label="Port (optional)", xalign=0))
+        port_entry = Gtk.Entry(
+            text=str(connection.port) if connection and connection.port else ""
+        )
+        port_entry.set_placeholder_text("Default from SSH config")
+        port_entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        port_entry.set_activates_default(True)
+        content.add(port_entry)
+
+        note = Gtk.Label(
+            label=(
+                "Authentication uses OpenSSH, ~/.ssh/config and ssh-agent. "
+                "Passwords and private keys are never stored by MujTerm."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        note.set_max_width_chars(54)
+        note.get_style_context().add_class("toolbox-command")
+        content.add(note)
+
+        error = Gtk.Label(xalign=0)
+        error.set_line_wrap(True)
+        error.get_style_context().add_class("toolbox-error")
+        content.add(error)
+
+        saved_project: Optional[Project] = None
+        dialog.show_all()
+        error.hide()
+        if name_entry:
+            name_entry.grab_focus()
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.ACCEPT:
+                break
+            try:
+                port = self._parse_ssh_port(port_entry.get_text())
+                if project:
+                    self.database.update_ssh_connection(
+                        project.id, target_entry.get_text(), port
+                    )
+                    saved_project = project
+                else:
+                    saved_project = self.database.create_ssh_project(
+                        name_entry.get_text() if name_entry else "",
+                        target_entry.get_text(),
+                        port,
+                        str(Path.home()),
+                    )
+                break
+            except ValueError as exc:
+                error.set_text(str(exc))
+                error.show()
+
+        dialog.destroy()
+        if not saved_project:
+            return
+        if project:
+            self.rebuild_sidebar()
+            return
+
+        self.active_project_id = saved_project.id
+        if not self.create_terminal(saved_project.id):
+            self.database.delete_project(saved_project.id)
+            self.active_project_id = None
+            self.rebuild_sidebar()
+
+    @staticmethod
+    def _parse_ssh_port(value: str) -> Optional[int]:
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError("SSH port must be a number between 1 and 65535.") from exc
+
+    @staticmethod
+    def _ssh_connection_label(connection: SshConnection) -> str:
+        if connection.port:
+            return f"{connection.target}:{connection.port}"
+        return connection.target
+
+    @staticmethod
+    def _ssh_arguments(connection: SshConnection) -> list[str]:
+        arguments = ["ssh"]
+        if connection.port:
+            arguments.extend(("-p", str(connection.port)))
+        arguments.append(connection.target)
+        return arguments
+
+    def _start_project_connection(
+        self, terminal: TerminalSession
+    ) -> Optional[SshConnection]:
+        if not terminal.project_id:
+            return None
+        connection = self.database.get_ssh_connection(terminal.project_id)
+        if connection:
+            self.backend.send_command(
+                terminal.tmux_name, self._ssh_arguments(connection)
+            )
+        return connection
+
     def create_terminal(
         self,
         project_id: Optional[str],
@@ -1166,13 +1594,21 @@ class MainWindow(Gtk.ApplicationWindow):
             else [t for t in self.database.list_terminals(project_id) if t.project_id == project_id]
         )
         terminal = self.database.create_terminal(project_id, f"Terminal {count + 1}", start_cwd)
+        connection: Optional[SshConnection] = None
         try:
             self.backend.create_session(terminal)
+            connection = self._start_project_connection(terminal)
         except TmuxError as exc:
+            self.backend.kill_session(terminal.tmux_name)
             self.database.delete_terminal(terminal.id)
             self._error("Could not create terminal", str(exc))
             return None
-        self._record_event(terminal, "terminal", f"Created in {display_path(start_cwd)}")
+        summary = (
+            f"SSH terminal opened for {self._ssh_connection_label(connection)}"
+            if connection
+            else f"Created in {display_path(start_cwd)}"
+        )
+        self._record_event(terminal, "terminal", summary)
         self.rebuild_sidebar()
         if activate:
             self.select_terminal(terminal.id)
@@ -1677,6 +2113,13 @@ class MainWindow(Gtk.ApplicationWindow):
     def _start_handoff_agent(
         self, source: TerminalSession, agent: AgentKind, card: str
     ) -> None:
+        if source.project_id and self.database.get_ssh_connection(source.project_id):
+            self._error(
+                "SSH project",
+                "Automatic agent startup is disabled for SSH projects. "
+                "Copy the handoff card and paste it after connecting instead.",
+            )
+            return
         terminal = self.create_terminal(
             source.project_id, self._terminal_cwd(source), activate=True
         )
@@ -1694,6 +2137,12 @@ class MainWindow(Gtk.ApplicationWindow):
         project = self.database.get_project(self.active_project_id) if self.active_project_id else None
         if not project:
             self._error("No active project", "Select a project before starting an agent race.")
+            return
+        if self.database.get_ssh_connection(project.id):
+            self._error(
+                "SSH project",
+                "Agent races require a local Git project and are not available for SSH projects.",
+            )
             return
         dialog = Gtk.Dialog(title=f"Agent races — {project.name}", transient_for=self, modal=True)
         dialog.set_default_size(600, 420)
@@ -1940,7 +2389,9 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         try:
             self.backend.create_session(terminal, self._recovery_cwd(terminal))
+            self._start_project_connection(terminal)
         except TmuxError as exc:
+            self.backend.kill_session(terminal.tmux_name)
             self._error("Could not restart terminal", str(exc))
             return
         old_view = self.terminal_views.pop(terminal_id, None)
@@ -1961,6 +2412,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def show_project_menu(self, project_id: str, event: Gdk.EventButton) -> None:
         menu = Gtk.Menu()
+        if self.database.get_ssh_connection(project_id):
+            edit_ssh = Gtk.MenuItem(label="Edit SSH Connection")
+            edit_ssh.connect(
+                "activate", lambda *_args: self.open_ssh_project_dialog(project_id)
+            )
+            menu.append(edit_ssh)
         rename = Gtk.MenuItem(label="Rename Project")
         rename.connect("activate", lambda *_args: self._rename_project(project_id))
         remove = Gtk.MenuItem(label="Remove Project")

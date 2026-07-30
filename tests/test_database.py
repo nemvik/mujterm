@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from mujterm.database import Database
-from mujterm.models import AgentRace
+from mujterm.models import AgentRace, SshConnection
 
 
 class DatabaseTests(unittest.TestCase):
@@ -36,6 +36,75 @@ class DatabaseTests(unittest.TestCase):
         self.database.move_terminal(second.id, project.id, first.id)
         terminals = [item for item in self.database.list_terminals(project.id) if item.project_id == project.id]
         self.assertEqual([item.id for item in terminals], [second.id, first.id])
+
+    def test_ssh_project_connection_lifecycle(self) -> None:
+        project = self.database.create_ssh_project(
+            "Production", "root@example.com", 2222, "/tmp"
+        )
+        self.assertIsNone(self.database.find_project_by_root("/tmp"))
+        self.assertEqual(
+            self.database.get_ssh_connection(project.id),
+            SshConnection(project.id, "root@example.com", 2222),
+        )
+
+        updated = self.database.update_ssh_connection(
+            project.id, "production-vps", None
+        )
+        self.assertEqual(updated, SshConnection(project.id, "production-vps"))
+
+        terminal = self.database.create_terminal(project.id, "SSH 1", "/tmp")
+        self.database.delete_project(project.id)
+        self.assertIsNone(self.database.get_ssh_connection(project.id))
+        ungrouped = self.database.get_terminal(terminal.id)
+        self.assertIsNone(ungrouped.project_id if ungrouped else "missing")
+
+    def test_ssh_project_validation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Project name"):
+            self.database.create_ssh_project(" ", "server", None, "/tmp")
+        with self.assertRaisesRegex(ValueError, "SSH target"):
+            self.database.create_ssh_project("VPS", "-oProxyCommand=bad", None, "/tmp")
+        with self.assertRaisesRegex(ValueError, "SSH target"):
+            self.database.create_ssh_project("VPS", "bad host", None, "/tmp")
+        with self.assertRaisesRegex(ValueError, "between 1 and 65535"):
+            self.database.create_ssh_project("VPS", "server", 70000, "/tmp")
+
+    def test_toolbox_command_lifecycle_and_persistence(self) -> None:
+        first = self.database.create_toolbox_command("Dev server", "pnpm dev")
+        second = self.database.create_toolbox_command(
+            "Inspect process", "ps aux | rg '$USER'"
+        )
+        self.assertEqual(self.database.list_toolbox_commands(), [first, second])
+
+        updated = self.database.update_toolbox_command(
+            first.id, "Development server", "pnpm dev --host"
+        )
+        self.assertEqual(updated.name, "Development server")
+        self.assertEqual(updated.command, "pnpm dev --host")
+
+        path = self.database.path
+        self.database.close()
+        self.database = Database(path)
+        self.assertEqual(
+            [item.name for item in self.database.list_toolbox_commands()],
+            ["Development server", "Inspect process"],
+        )
+
+        self.database.delete_toolbox_command(first.id)
+        remaining = self.database.list_toolbox_commands()
+        self.assertEqual([item.id for item in remaining], [second.id])
+        self.assertEqual(remaining[0].position, 0)
+
+    def test_toolbox_command_validation_and_unique_names(self) -> None:
+        self.database.create_toolbox_command("Deploy", "./deploy.sh")
+
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            self.database.create_toolbox_command("deploy", "./deploy-staging.sh")
+        with self.assertRaisesRegex(ValueError, "Name is required"):
+            self.database.create_toolbox_command("  ", "pwd")
+        with self.assertRaisesRegex(ValueError, "Command is required"):
+            self.database.create_toolbox_command("Working directory", "  ")
+        with self.assertRaisesRegex(ValueError, "one line"):
+            self.database.create_toolbox_command("Two commands", "pwd\nls")
 
     def test_timeline_events_are_persisted_and_filtered_by_project(self) -> None:
         first = self.database.create_project("First", "/tmp/first")
