@@ -9,19 +9,121 @@ import gi
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk
 
-from mujterm.models import SshConnection, TerminalSession, ToolboxCommand
+from mujterm.models import (
+    AgentStatus,
+    ListeningService,
+    SshConnection,
+    TerminalSession,
+    TerminalSnapshot,
+    ToolboxCommand,
+)
 from mujterm.ui import (
     MainWindow,
     TerminalView,
+    extract_prompt_command,
+    ghost_diff,
     literal_search_regex,
     normalized_url,
     output_match_summary,
+    quiet_radar_state,
     selection_autoscroll_lines,
     selection_autoscroll_y,
+    shell_like_command,
+    terminal_output_delta,
+    without_trailing_prompt,
 )
 
 
 class TerminalViewTests(unittest.TestCase):
+    @staticmethod
+    def _snapshot(
+        status: AgentStatus = AgentStatus.SHELL,
+        cpu_percent: float = 0.0,
+        memory_bytes: int = 0,
+        services: tuple[ListeningService, ...] = (),
+    ) -> TerminalSnapshot:
+        return TerminalSnapshot(
+            terminal_id="terminal-1",
+            cwd="/tmp",
+            command="bash",
+            branch=None,
+            git_root=None,
+            agent=None,
+            status=status,
+            cpu_percent=cpu_percent,
+            memory_bytes=memory_bytes,
+            services=services,
+        )
+
+    def test_prompt_command_extraction_handles_common_shell_prompts(self) -> None:
+        self.assertEqual(
+            extract_prompt_command("user@host:~/repo$ pytest -q"), "pytest -q"
+        )
+        self.assertEqual(extract_prompt_command("❯ git status"), "git status")
+        self.assertEqual(extract_prompt_command("root@host:/srv# "), "")
+        self.assertTrue(shell_like_command("/usr/bin/zsh"))
+        self.assertFalse(shell_like_command("vim"))
+
+    def test_terminal_output_delta_handles_growth_and_rolled_history(self) -> None:
+        output, truncated = terminal_output_delta(
+            "old\nuser$ echo hi",
+            "old\nuser$ echo hi\nhi\nuser$ ",
+        )
+        self.assertFalse(truncated)
+        self.assertEqual(without_trailing_prompt(output), "hi")
+
+        rolled, truncated = terminal_output_delta(
+            "first\nsecond\nuser$ seq 2",
+            "second\nuser$ seq 2\n1\n2\nuser$ ",
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(without_trailing_prompt(rolled), "1\n2")
+
+    def test_ghost_diff_counts_added_and_removed_lines(self) -> None:
+        diff, added, removed = ghost_diff("one\ntwo", "one\nthree\nfour")
+
+        self.assertIn("+three", diff)
+        self.assertIn("-two", diff)
+        self.assertEqual((added, removed), (2, 1))
+        self.assertEqual(ghost_diff("same", "same"), ("No output changes.", 0, 0))
+
+    def test_quiet_radar_prioritizes_attention_errors_and_resource_pressure(self) -> None:
+        self.assertEqual(quiet_radar_state(None), "idle")
+        self.assertEqual(quiet_radar_state(self._snapshot(), True), "working")
+        self.assertEqual(
+            quiet_radar_state(self._snapshot(AgentStatus.NEEDS_ACTION)),
+            "attention",
+        )
+        self.assertEqual(
+            quiet_radar_state(self._snapshot(cpu_percent=90)), "hot"
+        )
+        self.assertEqual(
+            quiet_radar_state(
+                self._snapshot(services=(ListeningService(port=3000, pid=10),))
+            ),
+            "service",
+        )
+        self.assertEqual(
+            quiet_radar_state(self._snapshot(AgentStatus.ERROR), True), "error"
+        )
+
+    def test_enter_at_terminal_starts_semantic_command_capture(self) -> None:
+        event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+        event.key.keyval = Gdk.KEY_Return
+        event.key.state = Gdk.ModifierType(0)
+        view = SimpleNamespace(
+            on_key=Mock(return_value=False),
+            _begin_command_capture=Mock(),
+            on_input=Mock(),
+            session=SimpleNamespace(id="terminal-1"),
+        )
+
+        handled = TerminalView._on_key_press(view, None, event)
+
+        self.assertFalse(handled)
+        view._begin_command_capture.assert_called_once_with()
+        view.on_input.assert_called_once_with("terminal-1")
+
     def test_literal_search_regex_handles_metacharacters_and_unicode(self) -> None:
         self.assertIsNotNone(literal_search_regex("error [42] + příliš"))
         self.assertIsNone(literal_search_regex(""))

@@ -77,6 +77,68 @@ class TmuxBackendTests(unittest.TestCase):
                 timeout=2,
             )
 
+    def test_capture_recent_output_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            success = CompletedProcess([], 0, "recent output\n", "")
+            with patch.object(backend, "_run", return_value=success) as run:
+                output = backend.capture_recent_output("mujterm-test", 320)
+
+            self.assertEqual(output, "recent output\n")
+            run.assert_called_once_with(
+                [
+                    "capture-pane",
+                    "-p",
+                    "-J",
+                    "-S",
+                    "-320",
+                    "-t",
+                    "=mujterm-test:",
+                ],
+                check=False,
+                timeout=1,
+            )
+
+    def test_capture_cursor_context_uses_cursor_row_and_preceding_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            cursor = CompletedProcess([], 0, "7\n", "")
+            context = CompletedProcess([], 0, "user@host$ echo hello\n", "")
+            with patch.object(backend, "_run", side_effect=(cursor, context)) as run:
+                output = backend.capture_cursor_context("mujterm-test")
+
+            self.assertEqual(output, "user@host$ echo hello")
+            self.assertEqual(
+                run.call_args_list[0].args[0],
+                [
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "=mujterm-test:",
+                    "#{cursor_y}",
+                ],
+            )
+            self.assertEqual(
+                run.call_args_list[1].args[0],
+                [
+                    "capture-pane",
+                    "-p",
+                    "-J",
+                    "-S",
+                    "4",
+                    "-E",
+                    "7",
+                    "-t",
+                    "=mujterm-test:",
+                ],
+            )
+
     def test_scroll_selection_uses_tmux_copy_mode_direction_and_speed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

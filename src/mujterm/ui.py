@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import concurrent.futures
+import difflib
 import os
 import re
 import signal
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -46,6 +48,7 @@ TERMINAL_TARGET = Gtk.TargetEntry.new("application/x-mujterm-terminal", Gtk.Targ
 # VTE's regex constructor accepts PCRE2 compile flags, which are not exported by
 # PyGObject.  Keep the small subset used by literal, Unicode-aware searches here.
 PCRE2_CASELESS = 0x00000008
+PCRE2_MULTILINE = 0x00000400
 PCRE2_UCP = 0x00020000
 PCRE2_UTF = 0x00080000
 URL_PATTERN = r"(?:https?://|www\.)[^\s<>\[\]{}\"']+"
@@ -283,7 +286,57 @@ CSS = b"""
 }
 .terminal-search-button:hover { color: #ffffff; border-color: #c4b5fd; }
 .project-search-snippet { color: #b6c2d9; font-family: Monospace; font-size: 0.78em; }
-.terminal-shell { padding: 8px 10px 10px 10px; background: #050810; }
+.terminal-shell {
+  padding: 8px 10px 10px 10px;
+  background: #050810;
+  border: 1px solid rgba(100, 116, 139, 0.12);
+  border-radius: 5px;
+}
+.terminal-shell.radar-working { border-color: rgba(103, 232, 249, 0.50); box-shadow: inset 0 0 12px rgba(34, 211, 238, 0.08); }
+.terminal-shell.radar-attention { border-color: rgba(253, 230, 138, 0.62); box-shadow: inset 0 0 13px rgba(250, 204, 21, 0.09); }
+.terminal-shell.radar-ready { border-color: rgba(134, 239, 172, 0.52); box-shadow: inset 0 0 12px rgba(74, 222, 128, 0.08); }
+.terminal-shell.radar-error { border-color: rgba(253, 164, 175, 0.68); box-shadow: inset 0 0 13px rgba(251, 113, 133, 0.10); }
+.terminal-shell.radar-hot { border-color: rgba(240, 171, 252, 0.68); box-shadow: inset 0 0 14px rgba(232, 121, 249, 0.10); }
+.terminal-shell.radar-service { border-color: rgba(147, 197, 253, 0.40); }
+.radar-indicator { color: #4b5563; font-family: Monospace; font-size: 0.72em; }
+.radar-indicator.radar-working { color: #67e8f9; }
+.radar-indicator.radar-attention { color: #fde68a; }
+.radar-indicator.radar-ready { color: #86efac; }
+.radar-indicator.radar-error { color: #fda4af; }
+.radar-indicator.radar-hot { color: #f0abfc; }
+.radar-indicator.radar-service { color: #93c5fd; }
+.command-block-toggle {
+  min-height: 24px;
+  padding: 1px 7px;
+  color: #c4b5fd;
+  background: rgba(196, 181, 253, 0.09);
+  border: 1px solid rgba(196, 181, 253, 0.28);
+  border-radius: 8px;
+  font-family: Monospace;
+  font-size: 0.70em;
+}
+.command-blocks {
+  padding: 7px 9px 9px 9px;
+  color: #e5e7eb;
+  background: #0d1220;
+  border-top: 1px solid #353b5a;
+}
+.command-blocks-title { color: #a5f3fc; font-family: Monospace; font-size: 0.72em; font-weight: bold; }
+.command-blocks-note { color: #818aa3; font-size: 0.70em; }
+.command-block-row {
+  margin: 2px 0;
+  padding: 0;
+  background: #151a2b;
+  border: 1px solid #353b5a;
+  border-radius: 7px;
+}
+.command-block-header { padding: 5px 8px; background: transparent; border: 0; box-shadow: none; }
+.command-block-command { color: #f1f5f9; font-family: Monospace; font-size: 0.78em; }
+.command-block-meta { color: #8b93aa; font-family: Monospace; font-size: 0.68em; }
+.command-block-diff { color: #f0abfc; font-family: Monospace; font-size: 0.70em; font-weight: bold; }
+.command-block-same { color: #86efac; font-family: Monospace; font-size: 0.70em; }
+.command-block-output { padding: 7px 9px; color: #cbd5e1; background: #080b14; font-family: Monospace; font-size: 0.74em; }
+.command-block-clear { min-height: 22px; padding: 0 6px; color: #a6a7c5; background: transparent; border: 0; box-shadow: none; }
 .mujterm-workspace { background: #050810; }
 .welcome-glyph { color: #4ce3f5; font-family: Monospace; font-size: 3.4em; font-weight: bold; }
 .welcome-status {
@@ -485,6 +538,143 @@ def selection_autoscroll_lines(
     return 0
 
 
+SHELL_LIKE_COMMANDS = frozenset(
+    {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "xonsh", "ssh"}
+)
+RADAR_CLASSES = (
+    "radar-idle",
+    "radar-working",
+    "radar-attention",
+    "radar-ready",
+    "radar-error",
+    "radar-hot",
+    "radar-service",
+)
+
+
+@dataclass
+class SemanticCommandBlock:
+    id: int
+    command: str
+    baseline_output: str
+    started_at: float
+    output: str = ""
+    finished_at: Optional[float] = None
+    previous_output: Optional[str] = None
+    diff_text: str = ""
+    added_lines: int = 0
+    removed_lines: int = 0
+    truncated: bool = False
+    saw_process: bool = False
+
+    @property
+    def running(self) -> bool:
+        return self.finished_at is None
+
+    @property
+    def duration(self) -> float:
+        return (self.finished_at or time.monotonic()) - self.started_at
+
+
+def shell_like_command(command: str) -> bool:
+    return Path(command).name.lower() in SHELL_LIKE_COMMANDS
+
+
+def extract_prompt_command(cursor_context: str) -> str:
+    """Best-effort extraction of a command from the cursor's logical line."""
+    lines = cursor_context.replace("\r", "").splitlines()
+    if not lines:
+        return ""
+    line = lines[-1].strip()
+    if not line:
+        return ""
+    match = re.match(r"^.*?[$#%>❯➜]\s+(\S.*)$", line)
+    if match:
+        return match.group(1).strip()
+    if re.search(r"[$#%>❯➜]\s*$", line):
+        return ""
+    return line
+
+
+def terminal_output_delta(before: str, after: str) -> tuple[str, bool]:
+    """Return content appended after a bounded terminal capture and truncation state."""
+    def capture_lines(value: str) -> list[str]:
+        lines = [line.rstrip() for line in value.replace("\r", "").splitlines()]
+        while lines and not lines[-1]:
+            lines.pop()
+        return lines
+
+    before_lines = capture_lines(before)
+    after_lines = capture_lines(after)
+    if not before_lines:
+        return "\n".join(after_lines), bool(after_lines)
+    for start in range(len(before_lines)):
+        suffix = before_lines[start:]
+        if len(suffix) <= len(after_lines) and suffix == after_lines[: len(suffix)]:
+            return "\n".join(after_lines[len(suffix) :]), start > 0
+    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
+    candidates = [
+        block
+        for block in matcher.get_matching_blocks()
+        if block.size and block.a + block.size == len(before_lines)
+    ]
+    if candidates:
+        overlap = max(candidates, key=lambda block: block.size)
+        return "\n".join(after_lines[overlap.b + overlap.size :]), True
+    return "\n".join(after_lines), True
+
+
+def without_trailing_prompt(output: str) -> str:
+    lines = [line.rstrip() for line in output.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    if lines and re.search(r"[$#%>❯➜]\s*$", lines[-1]):
+        lines.pop()
+    return "\n".join(lines).strip("\n")
+
+
+def ghost_diff(previous: str, current: str) -> tuple[str, int, int]:
+    previous_lines = previous.splitlines()
+    current_lines = current.splitlines()
+    diff_lines = list(
+        difflib.unified_diff(
+            previous_lines,
+            current_lines,
+            fromfile="previous run",
+            tofile="current run",
+            n=2,
+            lineterm="",
+        )
+    )
+    added = sum(
+        1 for line in diff_lines if line.startswith("+") and not line.startswith("+++")
+    )
+    removed = sum(
+        1 for line in diff_lines if line.startswith("-") and not line.startswith("---")
+    )
+    return ("\n".join(diff_lines) if diff_lines else "No output changes."), added, removed
+
+
+def quiet_radar_state(
+    snapshot: Optional[TerminalSnapshot], command_running: bool = False
+) -> str:
+    if snapshot is None:
+        return "idle"
+    if snapshot.status in (AgentStatus.ERROR, AgentStatus.ENDED):
+        return "error"
+    if snapshot.status == AgentStatus.NEEDS_ACTION:
+        return "attention"
+    if snapshot.cpu_percent >= 85 or snapshot.memory_bytes >= 1536 * 1024 * 1024:
+        return "hot"
+    if command_running or snapshot.status in (AgentStatus.WORKING, AgentStatus.UNKNOWN):
+        return "working"
+    if snapshot.status == AgentStatus.READY:
+        return "ready"
+    if snapshot.services:
+        return "service"
+    return "idle"
+
+
 class TerminalView(Gtk.Box):
     def __init__(
         self,
@@ -512,11 +702,22 @@ class TerminalView(Gtk.Box):
         self._selection_scroll_lines = 0
         self._selection_autoscroll_timer_id: Optional[int] = None
         self._selection_clipboard_timer_id: Optional[int] = None
+        self.command_blocks: list[SemanticCommandBlock] = []
+        self._next_command_block_id = 1
+        self._pending_command_block: Optional[SemanticCommandBlock] = None
+        self._command_capture_last = ""
+        self._command_capture_changed_at = 0.0
+        self._command_poll_timer_id: Optional[int] = None
+        self._expanded_command_blocks: set[int] = set()
+        self._last_snapshot: Optional[TerminalSnapshot] = None
+        self._radar_state = "idle"
+        self._radar_completion_active = False
+        self._radar_completion_timer_id: Optional[int] = None
         self.connect("destroy", self._selection_destroyed)
         self._build_hud()
         self._build_search()
-        terminal_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        terminal_shell.get_style_context().add_class("terminal-shell")
+        self.terminal_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.terminal_shell.get_style_context().add_class("terminal-shell")
         self.terminal = Vte.Terminal()
         self.terminal.set_scrollback_lines(50_000)
         self.terminal.set_scroll_on_output(False)
@@ -532,8 +733,9 @@ class TerminalView(Gtk.Box):
         self.terminal.connect("button-press-event", self._on_pointer_input)
         self.terminal.connect("focus-in-event", self._on_focus_in)
         self.terminal.connect("child-exited", lambda *_args: self.on_exit(self.session.id))
-        terminal_shell.pack_start(self.terminal, True, True, 0)
-        self.pack_start(terminal_shell, True, True, 0)
+        self.terminal_shell.pack_start(self.terminal, True, True, 0)
+        self.pack_start(self.terminal_shell, True, True, 0)
+        self._build_command_blocks()
         self._spawn()
 
     def _build_search(self) -> None:
@@ -656,6 +858,311 @@ class TerminalView(Gtk.Box):
             return True
         return False
 
+    def _build_command_blocks(self) -> None:
+        self.command_blocks_revealer = Gtk.Revealer()
+        self.command_blocks_revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_UP
+        )
+        self.command_blocks_revealer.set_transition_duration(120)
+
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        panel.get_style_context().add_class("command-blocks")
+        heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
+        title = Gtk.Label(label="COMMAND BLOCKS // EPHEMERAL", xalign=0)
+        title.get_style_context().add_class("command-blocks-title")
+        note = Gtk.Label(label="memory only · never written to disk", xalign=0)
+        note.get_style_context().add_class("command-blocks-note")
+        clear = Gtk.Button(label="CLEAR")
+        clear.get_style_context().add_class("command-block-clear")
+        clear.connect("clicked", self._clear_command_blocks)
+        heading.pack_start(title, False, False, 0)
+        heading.pack_start(note, True, True, 0)
+        heading.pack_end(clear, False, False, 0)
+        panel.pack_start(heading, False, False, 0)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_height(105)
+        scrolled.set_max_content_height(250)
+        scrolled.set_propagate_natural_height(True)
+        self.command_blocks_list = Gtk.ListBox()
+        self.command_blocks_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled.add(self.command_blocks_list)
+        panel.pack_start(scrolled, True, True, 0)
+        self.command_blocks_revealer.add(panel)
+        self.pack_start(self.command_blocks_revealer, False, False, 0)
+        self._render_command_blocks()
+
+    def _toggle_command_blocks(self, button: Gtk.ToggleButton) -> None:
+        self.command_blocks_revealer.set_reveal_child(button.get_active())
+        if button.get_active():
+            self._render_command_blocks()
+
+    def _clear_command_blocks(self, *_args: Any) -> None:
+        self._stop_command_poll()
+        self._pending_command_block = None
+        self.command_blocks.clear()
+        self._expanded_command_blocks.clear()
+        self._render_command_blocks()
+        self._apply_quiet_radar()
+
+    def _toggle_command_block(self, block_id: int) -> None:
+        if block_id in self._expanded_command_blocks:
+            self._expanded_command_blocks.remove(block_id)
+        else:
+            self._expanded_command_blocks.add(block_id)
+        self._render_command_blocks()
+
+    def _render_command_blocks(self) -> None:
+        self.command_blocks_button.set_label(f"BLOCKS {len(self.command_blocks)}")
+        for child in self.command_blocks_list.get_children():
+            self.command_blocks_list.remove(child)
+        if not self.command_blocks:
+            empty = Gtk.Label(
+                label="Run a shell command to create the first semantic block.",
+                xalign=0,
+            )
+            empty.get_style_context().add_class("command-blocks-note")
+            empty.set_margin_top(8)
+            empty.set_margin_bottom(8)
+            self.command_blocks_list.add(empty)
+            self.command_blocks_list.show_all()
+            return
+
+        for block in reversed(self.command_blocks):
+            row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            row.get_style_context().add_class("command-block-row")
+            header = Gtk.Button()
+            header.get_style_context().add_class("command-block-header")
+            header.set_relief(Gtk.ReliefStyle.NONE)
+            header.connect(
+                "clicked", lambda _button, block_id=block.id: self._toggle_command_block(block_id)
+            )
+            summary = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            command = Gtk.Label(
+                label=f"{'●' if block.running else '✓'}  {block.command}", xalign=0
+            )
+            command.set_ellipsize(Pango.EllipsizeMode.END)
+            command.get_style_context().add_class("command-block-command")
+            meta = Gtk.Label(label=self._command_block_meta(block))
+            meta.get_style_context().add_class("command-block-meta")
+            diff = Gtk.Label(label=self._command_block_badge(block))
+            diff.get_style_context().add_class(
+                "command-block-same"
+                if block.previous_output is not None
+                and not block.added_lines
+                and not block.removed_lines
+                else "command-block-diff"
+            )
+            summary.pack_start(command, True, True, 0)
+            summary.pack_end(diff, False, False, 0)
+            summary.pack_end(meta, False, False, 0)
+            header.add(summary)
+            row.pack_start(header, False, False, 0)
+
+            details = Gtk.Revealer()
+            details.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+            details.set_transition_duration(90)
+            detail = Gtk.Label(xalign=0, yalign=0)
+            detail.set_selectable(True)
+            detail.set_line_wrap(True)
+            detail.set_line_wrap_mode(Pango.WrapMode.CHAR)
+            detail.set_max_width_chars(160)
+            detail.set_markup(self._command_block_markup(block))
+            detail.get_style_context().add_class("command-block-output")
+            details.add(detail)
+            details.set_reveal_child(block.id in self._expanded_command_blocks)
+            row.pack_start(details, False, False, 0)
+            self.command_blocks_list.add(row)
+        self.command_blocks_list.show_all()
+
+    @staticmethod
+    def _command_block_meta(block: SemanticCommandBlock) -> str:
+        duration = block.duration
+        if block.running:
+            return f"RUNNING {duration:.1f}s"
+        return f"{duration:.1f}s"
+
+    @staticmethod
+    def _command_block_badge(block: SemanticCommandBlock) -> str:
+        if block.running:
+            return "LIVE"
+        if block.previous_output is None:
+            return "FIRST RUN"
+        if not block.added_lines and not block.removed_lines:
+            return "NO CHANGE"
+        return f"Δ +{block.added_lines} −{block.removed_lines}"
+
+    @staticmethod
+    def _command_block_markup(block: SemanticCommandBlock) -> str:
+        if block.running:
+            heading = "LIVE OUTPUT"
+            content = block.output or "(waiting for output)"
+        elif block.previous_output is not None:
+            heading = "GHOST DIFF // PREVIOUS → CURRENT"
+            content = block.diff_text
+        else:
+            heading = "OUTPUT"
+            content = block.output or "(no output)"
+        lines = content.splitlines()
+        clipped = len(lines) > 160
+        if clipped:
+            lines = lines[-160:]
+        rendered = [f'<span foreground="#a5f3fc"><b>{heading}</b></span>']
+        if block.truncated or clipped:
+            rendered.append(
+                '<span foreground="#818aa3">… earlier output omitted …</span>'
+            )
+        for line in lines:
+            escaped = GLib.markup_escape_text(line)
+            if line.startswith(("---", "+++", "@@")):
+                rendered.append(f'<span foreground="#93c5fd">{escaped}</span>')
+            elif line.startswith("+"):
+                rendered.append(f'<span foreground="#86efac">{escaped}</span>')
+            elif line.startswith("-"):
+                rendered.append(f'<span foreground="#fda4af">{escaped}</span>')
+            else:
+                rendered.append(escaped or " ")
+        return "\n".join(rendered)
+
+    def _can_capture_command(self) -> bool:
+        snapshot = self._last_snapshot
+        return bool(
+            snapshot
+            and not snapshot.dead
+            and snapshot.agent is None
+            and shell_like_command(snapshot.command)
+        )
+
+    def _begin_command_capture(self) -> None:
+        if not self._can_capture_command():
+            return
+        if self._pending_command_block is not None:
+            self._finish_command_capture(
+                self.backend.capture_recent_output(self.session.tmux_name)
+            )
+        cursor_context = self.backend.capture_cursor_context(self.session.tmux_name)
+        command = extract_prompt_command(cursor_context)
+        if not command:
+            return
+        baseline = self.backend.capture_recent_output(self.session.tmux_name)
+        now = time.monotonic()
+        block = SemanticCommandBlock(
+            id=self._next_command_block_id,
+            command=command[:500],
+            baseline_output=baseline,
+            started_at=now,
+        )
+        self._next_command_block_id += 1
+        self.command_blocks.append(block)
+        if len(self.command_blocks) > 20:
+            removed = self.command_blocks.pop(0)
+            self._expanded_command_blocks.discard(removed.id)
+        self._pending_command_block = block
+        self._command_capture_last = baseline
+        self._command_capture_changed_at = now
+        self._start_command_poll()
+        self._render_command_blocks()
+        self._apply_quiet_radar()
+
+    def _start_command_poll(self) -> None:
+        if self._command_poll_timer_id is None:
+            self._command_poll_timer_id = GLib.timeout_add(
+                400, self._command_poll_tick
+            )
+
+    def _stop_command_poll(self) -> None:
+        if self._command_poll_timer_id is not None:
+            GLib.source_remove(self._command_poll_timer_id)
+            self._command_poll_timer_id = None
+
+    def _command_poll_tick(self) -> bool:
+        block = self._pending_command_block
+        if block is None:
+            self._command_poll_timer_id = None
+            return False
+        now = time.monotonic()
+        capture = self.backend.capture_recent_output(self.session.tmux_name)
+        if capture != self._command_capture_last:
+            self._command_capture_last = capture
+            self._command_capture_changed_at = now
+            output, truncated = terminal_output_delta(block.baseline_output, capture)
+            block.output = output
+            block.truncated = block.truncated or truncated
+            self._render_command_blocks()
+
+        snapshot = self._last_snapshot
+        shell_idle = bool(
+            snapshot
+            and snapshot.agent is None
+            and shell_like_command(snapshot.command)
+        )
+        if not shell_idle:
+            block.saw_process = True
+        stable_for = now - self._command_capture_changed_at
+        elapsed = now - block.started_at
+        if shell_idle and (
+            (block.saw_process and stable_for >= 0.2)
+            or (elapsed >= 1.2 and stable_for >= 0.55)
+        ):
+            self._command_poll_timer_id = None
+            self._finish_command_capture(capture, stop_timer=False)
+            return False
+        return True
+
+    def _finish_command_capture(
+        self, capture: Optional[str] = None, stop_timer: bool = True
+    ) -> None:
+        block = self._pending_command_block
+        if block is None:
+            return
+        if stop_timer:
+            self._stop_command_poll()
+        capture = (
+            capture
+            if capture is not None
+            else self.backend.capture_recent_output(self.session.tmux_name)
+        )
+        output, truncated = terminal_output_delta(block.baseline_output, capture)
+        block.output = without_trailing_prompt(output)
+        block.truncated = block.truncated or truncated
+        block.finished_at = time.monotonic()
+        key = " ".join(block.command.split())
+        previous = next(
+            (
+                candidate
+                for candidate in reversed(self.command_blocks[:-1])
+                if candidate.finished_at is not None
+                and " ".join(candidate.command.split()) == key
+            ),
+            None,
+        )
+        if previous is not None:
+            block.previous_output = previous.output
+            (
+                block.diff_text,
+                block.added_lines,
+                block.removed_lines,
+            ) = ghost_diff(previous.output, block.output)
+        self._pending_command_block = None
+        self._render_command_blocks()
+        self._show_command_completion_radar()
+
+    def _show_command_completion_radar(self) -> None:
+        self._radar_completion_active = True
+        if self._radar_completion_timer_id is not None:
+            GLib.source_remove(self._radar_completion_timer_id)
+        self._radar_completion_timer_id = GLib.timeout_add(
+            1800, self._end_command_completion_radar
+        )
+        self._apply_quiet_radar()
+
+    def _end_command_completion_radar(self) -> bool:
+        self._radar_completion_timer_id = None
+        self._radar_completion_active = False
+        self._apply_quiet_radar()
+        return False
+
     def _build_hud(self) -> None:
         hud = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         hud.get_style_context().add_class("terminal-hud")
@@ -678,7 +1185,20 @@ class TerminalView(Gtk.Box):
         self.hud_agent = Gtk.Label()
         self.hud_agent.get_style_context().add_class("status-shell")
         self.hud_agent.set_no_show_all(True)
+        self.command_blocks_button = Gtk.ToggleButton(label="BLOCKS 0")
+        self.command_blocks_button.get_style_context().add_class(
+            "command-block-toggle"
+        )
+        self.command_blocks_button.set_tooltip_text(
+            "Ephemeral command blocks and changes from the previous run"
+        )
+        self.command_blocks_button.connect("toggled", self._toggle_command_blocks)
+        self.radar_indicator = Gtk.Label(label="●")
+        self.radar_indicator.get_style_context().add_class("radar-indicator")
+        self.radar_indicator.set_tooltip_text("Quiet radar: idle")
         hud.pack_start(identity, True, True, 0)
+        hud.pack_end(self.radar_indicator, False, False, 0)
+        hud.pack_end(self.command_blocks_button, False, False, 0)
         hud.pack_end(self.hud_agent, False, False, 0)
         hud.pack_end(self.hud_resources, False, False, 0)
         hud.pack_end(self.hud_services, False, False, 0)
@@ -698,7 +1218,43 @@ class TerminalView(Gtk.Box):
         else:
             widget.hide()
 
+    def _apply_quiet_radar(self) -> None:
+        state = quiet_radar_state(
+            self._last_snapshot, self._pending_command_block is not None
+        )
+        if self._radar_completion_active and state in ("idle", "service"):
+            state = "ready"
+        self._radar_state = state
+        class_name = f"radar-{state}"
+        for widget in (self.terminal_shell, self.radar_indicator):
+            context = widget.get_style_context()
+            for candidate in RADAR_CLASSES:
+                context.remove_class(candidate)
+            context.add_class(class_name)
+        descriptions = {
+            "idle": "idle",
+            "working": "command or agent running",
+            "attention": "agent needs input",
+            "ready": "command or agent completed",
+            "error": "agent or terminal ended with an error",
+            "hot": "high CPU or memory pressure",
+            "service": "local service is listening",
+        }
+        detail = descriptions[state]
+        snapshot = self._last_snapshot
+        if state == "hot" and snapshot:
+            detail += (
+                f" · CPU {snapshot.cpu_percent:.0f}%"
+                f" · RAM {snapshot.memory_bytes / (1024 ** 2):.0f} MiB"
+            )
+        elif state == "service" and snapshot:
+            ports = ", ".join(str(service.port) for service in snapshot.services)
+            detail += f" · {ports}"
+        self.radar_indicator.set_tooltip_text(f"Quiet radar: {detail}")
+
     def update_snapshot(self, snapshot: Optional[TerminalSnapshot], title: Optional[str] = None) -> None:
+        self._last_snapshot = snapshot
+        self._apply_quiet_radar()
         if title:
             self.hud_title.set_text(title)
         if not snapshot:
@@ -758,7 +1314,7 @@ class TerminalView(Gtk.Box):
         self.terminal.set_color_highlight(self._color("#3a315d"))
 
     def _configure_url_matching(self) -> None:
-        flags = PCRE2_UTF | PCRE2_UCP | PCRE2_CASELESS
+        flags = PCRE2_UTF | PCRE2_UCP | PCRE2_CASELESS | PCRE2_MULTILINE
         self._url_regex = Vte.Regex.new_for_match(
             URL_PATTERN, len(URL_PATTERN.encode("utf-8")), flags
         )
@@ -810,6 +1366,12 @@ class TerminalView(Gtk.Box):
         if control and event.keyval in (Gdk.KEY_minus, Gdk.KEY_underscore):
             self.terminal.set_font_scale(max(0.5, self.terminal.get_font_scale() - 0.1))
             return True
+        if (
+            event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
+            and not control
+            and not bool(event.state & Gdk.ModifierType.MOD1_MASK)
+        ):
+            self._begin_command_capture()
         if event.keyval not in (
             Gdk.KEY_Shift_L,
             Gdk.KEY_Shift_R,
@@ -908,6 +1470,10 @@ class TerminalView(Gtk.Box):
         if self._selection_clipboard_timer_id is not None:
             GLib.source_remove(self._selection_clipboard_timer_id)
             self._selection_clipboard_timer_id = None
+        self._stop_command_poll()
+        if self._radar_completion_timer_id is not None:
+            GLib.source_remove(self._radar_completion_timer_id)
+            self._radar_completion_timer_id = None
 
     def copy_selection(self) -> None:
         if self.terminal.get_has_selection():

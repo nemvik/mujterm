@@ -11,6 +11,8 @@ an isolated tmux server so terminal processes survive closing the window.
 - Independent full-workspace terminal pages and a modal keyboard navigation mode.
 - Nested horizontal and vertical split panes with draggable dividers.
 - Mouse-wheel scrollback in shells and full-screen Codex/Claude interfaces.
+- Ephemeral semantic command blocks with live output and Ghost Diff between repeated runs.
+- A quiet per-terminal radar for work, attention, completion, errors, resource pressure, and services.
 - Live current-directory and Git branch labels.
 - Live per-session CPU and resident-memory totals for the complete process tree.
 - Attention queue for agents waiting on input, with one-key navigation.
@@ -92,6 +94,17 @@ Press `Ctrl+Shift+F` to open the active terminal's search bar. Enter and
 Shift+Enter move between highlighted matches. Select **PROJECT** in that bar to
 search the complete tmux history of every session in the active project; choosing
 a result focuses that terminal and carries the query back into its search bar.
+
+Select **BLOCKS** in a terminal HUD to open its semantic command history. MujTerm
+captures a bounded output window when Enter is pressed at a recognized shell
+prompt; repeating the same command adds a Ghost Diff with added and removed
+lines. Click a block to expand it, or choose **CLEAR** to forget the in-memory
+history. Commands and outputs in this panel are never persisted to disk.
+
+The small dot and subtle terminal border form the quiet radar: cyan means work
+is running, amber needs attention, green has just completed, pink marks an error
+or ended terminal, magenta signals high CPU/RAM pressure, and blue indicates a
+listening local service. Hover the dot for the current reason.
 
 Select **CMD** in the header to open the command toolbox, then choose
 **+ ADD COMMAND**. Add a name and a single-line command, then click the saved

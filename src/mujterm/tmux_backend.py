@@ -154,6 +154,56 @@ class TmuxBackend:
         )
         return result.stdout if result.returncode == 0 else ""
 
+    def capture_recent_output(
+        self, tmux_name: str, history_lines: int = 600
+    ) -> str:
+        """Return a bounded tail of pane history plus its visible contents."""
+        history_lines = max(0, min(5000, history_lines))
+        result = self._run(
+            [
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                f"-{history_lines}",
+                "-t",
+                self._pane_target(tmux_name),
+            ],
+            check=False,
+            timeout=1,
+        )
+        return result.stdout if result.returncode == 0 else ""
+
+    def capture_cursor_context(self, tmux_name: str, preceding_lines: int = 3) -> str:
+        """Capture the logical pane line ending at the current cursor row."""
+        target = self._pane_target(tmux_name)
+        cursor = self._run(
+            ["display-message", "-p", "-t", target, "#{cursor_y}"],
+            check=False,
+            timeout=1,
+        )
+        try:
+            cursor_y = int(cursor.stdout.strip())
+        except (TypeError, ValueError):
+            return ""
+        start_y = max(0, cursor_y - max(0, preceding_lines))
+        result = self._run(
+            [
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                str(start_y),
+                "-E",
+                str(cursor_y),
+                "-t",
+                target,
+            ],
+            check=False,
+            timeout=1,
+        )
+        return result.stdout.rstrip("\n") if result.returncode == 0 else ""
+
     def scroll_selection(self, tmux_name: str, lines: int) -> bool:
         """Scroll an active tmux copy-mode selection toward older or newer text."""
         if not lines:
