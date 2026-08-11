@@ -9,6 +9,7 @@ import gi
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk
 
+from mujterm.impact import GitImpact
 from mujterm.models import (
     AgentStatus,
     ListeningService,
@@ -19,6 +20,7 @@ from mujterm.models import (
 )
 from mujterm.ui import (
     MainWindow,
+    SemanticCommandBlock,
     TerminalView,
     extract_prompt_command,
     ghost_diff,
@@ -123,6 +125,68 @@ class TerminalViewTests(unittest.TestCase):
         self.assertFalse(handled)
         view._begin_command_capture.assert_called_once_with()
         view.on_input.assert_called_once_with("terminal-1")
+
+    def test_exact_shell_events_upgrade_block_and_finish_with_exit_code(self) -> None:
+        block = SemanticCommandBlock(
+            id=1,
+            command="estimated command",
+            baseline_output="prompt$ estimated command",
+            started_at=1.0,
+        )
+        view = SimpleNamespace(
+            _pending_command_block=block,
+            _armed_command_context=None,
+            _render_command_blocks=Mock(),
+            _finish_command_capture=Mock(),
+        )
+
+        TerminalView._exact_command_started(
+            view, "printf '%s' exact", "bash", "/tmp/project"
+        )
+        self.assertTrue(block.exact)
+        self.assertEqual(block.command, "printf '%s' exact")
+        self.assertEqual(block.shell, "bash")
+        self.assertEqual(block.cwd, "/tmp/project")
+
+        TerminalView._exact_command_ended(view, 7, "/tmp/after")
+        self.assertEqual(block.exit_code, 7)
+        self.assertEqual(block.end_cwd, "/tmp/after")
+        view._finish_command_capture.assert_called_once_with()
+
+    def test_impact_lens_markup_reports_files_ports_and_resources(self) -> None:
+        block = SemanticCommandBlock(
+            id=1,
+            command="make dev",
+            baseline_output="",
+            started_at=1.0,
+            finished_at=2.0,
+            exact=True,
+            shell="zsh",
+            cwd="/repo",
+            end_cwd="/repo",
+            exit_code=0,
+            git_impact=GitImpact(
+                created=("new.py",),
+                modified=("app.py",),
+                branch_before="main",
+                branch_after="feature",
+            ),
+            opened_ports=(5173,),
+            cpu_before=2.0,
+            peak_cpu=88.0,
+            memory_before=100 * 1024 * 1024,
+            peak_memory=180 * 1024 * 1024,
+            impact_ready=True,
+        )
+
+        markup = TerminalView._command_impact_markup(block)
+
+        self.assertIn("exact OSC 133", markup)
+        self.assertIn("exit 0", markup)
+        self.assertIn("main → feature", markup)
+        self.assertIn("new.py", markup)
+        self.assertIn(":5173", markup)
+        self.assertIn("RAM +80 MiB", markup)
 
     def test_literal_search_regex_handles_metacharacters_and_unicode(self) -> None:
         self.assertIsNotNone(literal_search_regex("error [42] + příliš"))

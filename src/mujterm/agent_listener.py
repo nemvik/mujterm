@@ -26,8 +26,12 @@ class AgentSocketListener:
         except FileNotFoundError:
             pass
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        listener.bind(str(self.path))
-        os.chmod(self.path, 0o600)
+        try:
+            listener.bind(str(self.path))
+            os.chmod(self.path, 0o600)
+        except OSError:
+            listener.close()
+            raise
         listener.settimeout(0.5)
         self._socket = listener
         self._thread = threading.Thread(target=self._run, name="agent-events", daemon=True)

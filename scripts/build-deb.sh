@@ -20,6 +20,8 @@ find "$package_root/usr/lib/mujterm" -type d -exec chmod 0755 {} +
 find "$package_root/usr/lib/mujterm" -type f -exec chmod 0644 {} +
 install -m 0755 "$project_root/packaging/mujterm" "$package_root/usr/bin/mujterm"
 install -m 0755 "$project_root/packaging/mujterm-agent-hook" "$package_root/usr/bin/mujterm-agent-hook"
+install -m 0755 "$project_root/packaging/mujterm-shell" "$package_root/usr/bin/mujterm-shell"
+install -m 0755 "$project_root/packaging/mujterm-shell-hook" "$package_root/usr/bin/mujterm-shell-hook"
 install -m 0644 "$project_root/data/io.github.viktornemcok.MujTerm.desktop" "$package_root/usr/share/applications/"
 install -m 0644 "$project_root/data/io.github.viktornemcok.MujTerm.metainfo.xml" "$package_root/usr/share/metainfo/"
 install -m 0644 "$project_root/data/io.github.viktornemcok.MujTerm.svg" "$package_root/usr/share/icons/hicolor/scalable/apps/"

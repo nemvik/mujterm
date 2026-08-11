@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -43,6 +44,8 @@ class TmuxBackend:
         self.socket_path = socket_path or runtime / "tmux.sock"
         config_root = ensure_private_dir(config_dir())
         self.config_path = config_path or config_root / "tmux.conf"
+        self.shell_launcher = self._resolve_helper("mujterm-shell")
+        self.shell_hook = self._resolve_helper("mujterm-shell-hook")
         self._ensure_config()
 
     def _ensure_config(self) -> None:
@@ -99,6 +102,11 @@ class TmuxBackend:
                 start_directory,
                 "-e",
                 f"MUJTERM_TERMINAL_ID={terminal.id}",
+                "-e",
+                "MUJTERM_SHELL_INTEGRATION=1",
+                "-e",
+                f"MUJTERM_SHELL_HOOK={self.shell_hook}",
+                self.shell_launcher,
             ],
             check=False,
         )
@@ -316,3 +324,10 @@ class TmuxBackend:
         if path.is_dir():
             return str(path.resolve())
         return str(Path.home())
+
+    @staticmethod
+    def _resolve_helper(name: str) -> str:
+        development = Path(__file__).resolve().parents[2] / "bin" / name
+        if development.is_file():
+            return str(development)
+        return shutil.which(name) or name

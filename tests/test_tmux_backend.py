@@ -9,10 +9,37 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mujterm.database import Database
+from mujterm.models import TerminalSession
 from mujterm.tmux_backend import TMUX_SELECTION_BINDINGS, TmuxBackend, TmuxError
 
 
 class TmuxBackendTests(unittest.TestCase):
+    def test_new_session_uses_exact_shell_launcher_and_private_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            terminal = TerminalSession(
+                id="2dd2c1f6-114d-4c9f-bef7-68353170ab23",
+                project_id=None,
+                name="Exact",
+                tmux_name="mujterm-test",
+                initial_cwd=str(root),
+                last_cwd=str(root),
+                position=0,
+            )
+            success = CompletedProcess([], 0, "", "")
+            with patch.object(backend, "has_session", return_value=False), patch.object(
+                backend, "_run", return_value=success
+            ) as run:
+                backend.create_session(terminal)
+
+            arguments = run.call_args.args[0]
+            self.assertIn("MUJTERM_SHELL_INTEGRATION=1", arguments)
+            self.assertIn(f"MUJTERM_SHELL_HOOK={backend.shell_hook}", arguments)
+            self.assertEqual(arguments[-1], backend.shell_launcher)
+
     def test_send_command_shell_quotes_prompt_and_presses_enter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

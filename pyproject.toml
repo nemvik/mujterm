@@ -11,6 +11,8 @@ requires-python = ">=3.10"
 [project.scripts]
 mujterm = "mujterm.__main__:main"
 mujterm-agent-hook = "mujterm.agent_bridge:main"
+mujterm-shell = "mujterm.shell_bridge:launch_main"
+mujterm-shell-hook = "mujterm.shell_bridge:hook_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

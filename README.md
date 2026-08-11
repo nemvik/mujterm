@@ -11,7 +11,7 @@ an isolated tmux server so terminal processes survive closing the window.
 - Independent full-workspace terminal pages and a modal keyboard navigation mode.
 - Nested horizontal and vertical split panes with draggable dividers.
 - Mouse-wheel scrollback in shells and full-screen Codex/Claude interfaces.
-- Ephemeral semantic command blocks with live output and Ghost Diff between repeated runs.
+- Exact OSC 133 command blocks with exit status, live output, Ghost Diff, and Impact Lens.
 - A quiet per-terminal radar for work, attention, completion, errors, resource pressure, and services.
 - Live current-directory and Git branch labels.
 - Live per-session CPU and resident-memory totals for the complete process tree.
@@ -95,11 +95,20 @@ Shift+Enter move between highlighted matches. Select **PROJECT** in that bar to
 search the complete tmux history of every session in the active project; choosing
 a result focuses that terminal and carries the query back into its search bar.
 
-Select **BLOCKS** in a terminal HUD to open its semantic command history. MujTerm
-captures a bounded output window when Enter is pressed at a recognized shell
-prompt; repeating the same command adds a Ghost Diff with added and removed
-lines. Click a block to expand it, or choose **CLEAR** to forget the in-memory
-history. Commands and outputs in this panel are never persisted to disk.
+Select **BLOCKS** in a terminal HUD to open its semantic command history. New
+local Bash, Zsh, and Fish sessions emit standard OSC 133 boundaries and send the
+exact command, working directory, and exit status over MujTerm's private Unix
+socket. Existing sessions and remote SSH shells continue to use bounded
+best-effort prompt detection until their shell is restarted. Repeating the same
+command adds a Ghost Diff with added and removed lines.
+
+Each expanded block includes an **Impact Lens**. It compares bounded Git status
+metadata before and after the command, records branch and commit transitions,
+new or closed listening ports, peak CPU, and resident-memory growth. It never
+stores file contents. Click a block to expand it, or choose **CLEAR** to forget
+the in-memory history. Commands, output, and impact metadata in this panel are
+never persisted to disk. MujTerm sources the normal user Bash/Zsh configuration
+through a private generated wrapper; it does not edit shell dotfiles.
 
 The small dot and subtle terminal border form the quiet radar: cyan means work
 is running, amber needs attention, green has just completed, pink marks an error
