@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mujterm.database import Database
-from mujterm.tmux_backend import TmuxBackend, TmuxError
+from mujterm.tmux_backend import TMUX_SELECTION_BINDINGS, TmuxBackend, TmuxError
 
 
 class TmuxBackendTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class TmuxBackendTests(unittest.TestCase):
             with patch.object(backend, "_run", return_value=success) as run:
                 backend.send_command("mujterm-test", ["codex", "fix $HOME; don't execute"])
             literal = run.call_args_list[0].args[0]
-            self.assertEqual(literal[:5], ["send-keys", "-t", "=mujterm-test", "-l", "--"])
+            self.assertEqual(literal[:5], ["send-keys", "-t", "=mujterm-test:", "-l", "--"])
             self.assertEqual(literal[5], "codex 'fix $HOME; don'\"'\"'t execute'")
             self.assertEqual(run.call_args_list[1].args[0][-1], "Enter")
 
@@ -37,7 +37,7 @@ class TmuxBackendTests(unittest.TestCase):
                 backend.send_text("mujterm-test", text)
 
             run.assert_called_once_with(
-                ["send-keys", "-t", "=mujterm-test", "-l", "--", text],
+                ["send-keys", "-t", "=mujterm-test:", "-l", "--", text],
                 check=False,
             )
 
@@ -51,6 +51,67 @@ class TmuxBackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(TmuxError, "one line"):
                     backend.send_text("mujterm-test", "pwd\nls")
                 run.assert_not_called()
+
+    def test_capture_output_includes_complete_joined_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            success = CompletedProcess([], 0, "first line\nsecond line\n", "")
+            with patch.object(backend, "_run", return_value=success) as run:
+                output = backend.capture_output("mujterm-test")
+
+            self.assertEqual(output, success.stdout)
+            run.assert_called_once_with(
+                [
+                    "capture-pane",
+                    "-p",
+                    "-J",
+                    "-S",
+                    "-",
+                    "-t",
+                    "=mujterm-test:",
+                ],
+                check=False,
+                timeout=2,
+            )
+
+    def test_scroll_selection_uses_tmux_copy_mode_direction_and_speed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            success = CompletedProcess([], 0, "", "")
+            with patch.object(backend, "_run", return_value=success) as run:
+                self.assertTrue(backend.scroll_selection("mujterm-test", -4))
+
+            run.assert_called_once_with(
+                [
+                    "send-keys",
+                    "-t",
+                    "=mujterm-test:",
+                    "-X",
+                    "-N",
+                    "4",
+                    "cursor-up",
+                ],
+                check=False,
+                timeout=1,
+            )
+
+    def test_capture_buffer_returns_latest_tmux_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = TmuxBackend(
+                socket_path=root / "tmux.sock", config_path=root / "tmux.conf"
+            )
+            success = CompletedProcess([], 0, "selected text", "")
+            with patch.object(backend, "_run", return_value=success) as run:
+                self.assertEqual(backend.capture_buffer(), "selected text")
+
+            run.assert_called_once_with(["show-buffer"], check=False, timeout=1)
 
     def test_existing_config_enables_mouse_without_losing_custom_options(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -72,6 +133,8 @@ class TmuxBackendTests(unittest.TestCase):
             self.assertIn("set -g mouse on", migrated)
             self.assertNotIn("set -g mouse off", migrated)
             self.assertIn("set -g history-limit 12345", migrated)
+            for binding in TMUX_SELECTION_BINDINGS:
+                self.assertEqual(migrated.count(binding), 1)
 
     def test_create_list_and_kill_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

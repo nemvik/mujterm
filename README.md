@@ -46,14 +46,14 @@ tmux socket. It does not import, modify, or terminate unrelated tmux sessions.
 
 ## Agent status integration
 
-Select the gear button and choose **Enable**. MujTerm merges its handlers into
-the existing Claude Code and Codex hook configuration after making a timestamped
-backup. The handlers only become active for processes inheriting a
+Open `⋯` → **Agent Integrations…** and choose **Enable**. MujTerm merges its
+handlers into the existing Claude Code and Codex hook configuration after making
+a timestamped backup. The handlers only become active for processes inheriting a
 `MUJTERM_TERMINAL_ID`, so agents launched in other terminals are ignored.
 
 Codex requires one additional safety step: launch Codex in MujTerm, enter
 `/hooks`, review the MujTerm command, and trust it. Integrations can be removed
-from the same gear dialog without touching other hooks.
+from the same integrations dialog without touching other hooks.
 
 ## Keyboard shortcuts
 
@@ -61,6 +61,7 @@ from the same gear dialog without touching other hooks.
 - `Ctrl+Shift+Right`: split the active pane to the right
 - `Ctrl+Shift+Down`: split the active pane downward
 - `Ctrl+Shift+A`: jump to the next agent waiting for input
+- `Ctrl+Shift+F`: find text in the active terminal's output
 - `Ctrl+Space`: enter or leave keyboard mode
 - `Ctrl+Shift+C` / `Ctrl+Shift+V`: copy / paste
 - `Ctrl++` / `Ctrl+-`: terminal font zoom
@@ -68,19 +69,29 @@ from the same gear dialog without touching other hooks.
 
 Detected localhost ports appear below their terminal. Click a port to open it in
 the default browser; right-click to copy its URL or stop the owning process after
-confirmation. The clock button in the header opens the active project's timeline.
+confirmation. The active project's timeline is available from the `⋯` menu.
 
-The `⇄` button creates a reviewable handoff card and can launch either agent in
-a new terminal. The `A/B` button gives Codex and Claude the same task in separate
+The agent handoff action creates a reviewable context card and can launch either
+agent in a new terminal. Handoffs, the timeline, service map, SSH projects, and
+agent integration controls are available from the `⋯` menu. The agent race action
+gives Codex and Claude the same task in separate
 Git worktrees, opens them side by side, and keeps their diff/resource comparison
 available afterward. Worktrees are stored below MujTerm's XDG data directory;
 MujTerm does not automatically delete race branches or worktrees containing work.
 The network button shows dependencies inferred from live TCP connections. It
 does not inspect payloads or terminal output.
 
-Drag with the left mouse button to select terminal text, then press
-`Ctrl+Shift+C` or right-click and choose **Copy**. The terminal context menu also
-provides paste and select-all actions.
+Drag with the left mouse button to select terminal text; releasing the button
+copies it to the desktop clipboard. Keep dragging at the top or bottom edge to
+scroll through tmux history and extend the selection beyond the visible screen.
+`Ctrl+Shift+C` and the context-menu **Copy** action copy the most recent selection
+again. Hold Shift while dragging to use VTE's local selection instead. Right-click
+a detected web address to open or copy it.
+
+Press `Ctrl+Shift+F` to open the active terminal's search bar. Enter and
+Shift+Enter move between highlighted matches. Select **PROJECT** in that bar to
+search the complete tmux history of every session in the active project; choosing
+a result focuses that terminal and carries the query back into its search bar.
 
 Select **CMD** in the header to open the command toolbox, then choose
 **+ ADD COMMAND**. Add a name and a single-line command, then click the saved

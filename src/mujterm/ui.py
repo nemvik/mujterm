@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import re
 import signal
 import time
 from datetime import datetime
@@ -42,6 +43,13 @@ from .worktrees import WorktreeError, compare_worktree, create_race_worktrees
 PROJECT_TARGET = Gtk.TargetEntry.new("application/x-mujterm-project", Gtk.TargetFlags.SAME_APP, 1)
 TERMINAL_TARGET = Gtk.TargetEntry.new("application/x-mujterm-terminal", Gtk.TargetFlags.SAME_APP, 2)
 
+# VTE's regex constructor accepts PCRE2 compile flags, which are not exported by
+# PyGObject.  Keep the small subset used by literal, Unicode-aware searches here.
+PCRE2_CASELESS = 0x00000008
+PCRE2_UCP = 0x00020000
+PCRE2_UTF = 0x00080000
+URL_PATTERN = r"(?:https?://|www\.)[^\s<>\[\]{}\"']+"
+
 
 CSS = b"""
 .mujterm-window, .mujterm-root {
@@ -78,16 +86,17 @@ CSS = b"""
   background: rgba(57, 215, 239, 0.16);
   border-color: #2bb8d1;
 }
+.hud-button.attention-button-active {
+  color: #fff7d6;
+  background: rgba(253, 230, 138, 0.16);
+  border-color: rgba(253, 230, 138, 0.58);
+  font-weight: bold;
+}
+.overflow-button { font-family: Monospace; font-size: 1.15em; font-weight: bold; }
 .split-button {
   min-width: 38px;
   font-family: Monospace;
   font-size: 1.1em;
-  font-weight: bold;
-}
-.keyboard-mode-on {
-  color: #161225;
-  background-image: linear-gradient(to right, #fde68a, #f0abfc);
-  border-color: #fff2b2;
   font-weight: bold;
 }
 .mujterm-sidebar {
@@ -250,6 +259,30 @@ CSS = b"""
   font-family: Monospace;
   font-size: 0.74em;
 }
+.terminal-search {
+  padding: 6px 9px;
+  color: #e5e7eb;
+  background: #111827;
+  border-bottom: 1px solid #374151;
+}
+.terminal-search-entry { min-width: 120px; }
+.terminal-search-status {
+  color: #a6a7c5;
+  font-family: Monospace;
+  font-size: 0.72em;
+}
+.terminal-search-status.no-match { color: #fda4af; }
+.terminal-search-button {
+  min-width: 28px;
+  min-height: 26px;
+  padding: 0 6px;
+  color: #d8d5ff;
+  background: rgba(196, 181, 253, 0.10);
+  border: 1px solid rgba(196, 181, 253, 0.30);
+  box-shadow: none;
+}
+.terminal-search-button:hover { color: #ffffff; border-color: #c4b5fd; }
+.project-search-snippet { color: #b6c2d9; font-family: Monospace; font-size: 0.78em; }
 .terminal-shell { padding: 8px 10px 10px 10px; background: #050810; }
 .mujterm-workspace { background: #050810; }
 .welcome-glyph { color: #4ce3f5; font-family: Monospace; font-size: 3.4em; font-weight: bold; }
@@ -376,6 +409,82 @@ def resource_text(cpu_percent: float, memory_bytes: int) -> str:
     return f"CPU {cpu_percent:.1f}%  ·  RAM {memory_mib:.0f} MiB"
 
 
+def literal_search_regex(query: str, case_sensitive: bool = False) -> Optional[Vte.Regex]:
+    if not query:
+        return None
+    pattern = re.escape(query)
+    flags = PCRE2_UTF | PCRE2_UCP
+    if not case_sensitive:
+        flags |= PCRE2_CASELESS
+    return Vte.Regex.new_for_search(pattern, len(pattern.encode("utf-8")), flags)
+
+
+def output_match_summary(
+    output: str,
+    query: str,
+    preview_limit: int = 2,
+    case_sensitive: bool = False,
+) -> tuple[int, tuple[str, ...]]:
+    """Return a literal match count and short matching lines."""
+    if not query:
+        return 0, ()
+    needle = query if case_sensitive else query.casefold()
+    count = 0
+    previews: list[str] = []
+    for line in output.splitlines():
+        haystack = line if case_sensitive else line.casefold()
+        line_count = haystack.count(needle)
+        if not line_count:
+            continue
+        count += line_count
+        if len(previews) < preview_limit:
+            compact = " ".join(line.strip().split())
+            previews.append(compact[:180] or "(blank line)")
+    return count, tuple(previews)
+
+
+def normalized_url(value: str) -> str:
+    uri = value.strip().rstrip(".,;:!?)]}")
+    if uri.startswith("www."):
+        return f"https://{uri}"
+    return uri
+
+
+def selection_autoscroll_y(
+    pointer_y: float, terminal_height: int, edge_size: float
+) -> float:
+    """Move an edge drag just outside VTE so its native autoscroll engages."""
+    if terminal_height <= 0 or edge_size <= 0:
+        return pointer_y
+    edge_size = min(edge_size, terminal_height / 4)
+    if pointer_y < edge_size:
+        return -1.0
+    if pointer_y >= terminal_height - edge_size:
+        return float(terminal_height)
+    return pointer_y
+
+
+def selection_autoscroll_lines(
+    pointer_y: float,
+    terminal_height: int,
+    edge_size: float,
+    max_lines: int = 6,
+) -> int:
+    """Return signed tmux copy-mode lines for a drag near a viewport edge."""
+    if terminal_height <= 0 or edge_size <= 0 or max_lines <= 0:
+        return 0
+    edge_size = min(edge_size, terminal_height / 4)
+    if pointer_y < edge_size:
+        distance = edge_size - pointer_y
+        speed = min(max_lines, 1 + int((distance / edge_size) * 2))
+        return -speed
+    if pointer_y >= terminal_height - edge_size:
+        distance = pointer_y - (terminal_height - edge_size)
+        speed = min(max_lines, 1 + int((distance / edge_size) * 2))
+        return speed
+    return 0
+
+
 class TerminalView(Gtk.Box):
     def __init__(
         self,
@@ -385,6 +494,8 @@ class TerminalView(Gtk.Box):
         on_exit: Callable[[str], None],
         on_focus: Callable[[str], None],
         on_key: Callable[[Gdk.EventKey], bool],
+        on_open_uri: Callable[[str], None],
+        on_project_search: Callable[[str, bool], None],
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.get_style_context().add_class("terminal-view")
@@ -394,7 +505,16 @@ class TerminalView(Gtk.Box):
         self.on_exit = on_exit
         self.on_focus = on_focus
         self.on_key = on_key
+        self.on_open_uri = on_open_uri
+        self.on_project_search = on_project_search
+        self._selection_drag_active = False
+        self._selection_drag_happened = False
+        self._selection_scroll_lines = 0
+        self._selection_autoscroll_timer_id: Optional[int] = None
+        self._selection_clipboard_timer_id: Optional[int] = None
+        self.connect("destroy", self._selection_destroyed)
         self._build_hud()
+        self._build_search()
         terminal_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         terminal_shell.get_style_context().add_class("terminal-shell")
         self.terminal = Vte.Terminal()
@@ -405,6 +525,7 @@ class TerminalView(Gtk.Box):
         self.terminal.set_allow_hyperlink(True)
         self.terminal.set_font(Pango.FontDescription("Monospace 11"))
         self._apply_terminal_palette()
+        self._configure_url_matching()
         self.terminal.connect("event", self._on_pointer_event)
         self.terminal.connect("button-press-event", self._on_button_press)
         self.terminal.connect("key-press-event", self._on_key_press)
@@ -414,6 +535,126 @@ class TerminalView(Gtk.Box):
         terminal_shell.pack_start(self.terminal, True, True, 0)
         self.pack_start(terminal_shell, True, True, 0)
         self._spawn()
+
+    def _build_search(self) -> None:
+        self.search_revealer = Gtk.Revealer()
+        self.search_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.search_revealer.set_transition_duration(100)
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar.get_style_context().add_class("terminal-search")
+        bar.connect("size-allocate", self._search_size_allocate)
+
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Find in terminal output")
+        self.search_entry.get_style_context().add_class("terminal-search-entry")
+        self.search_entry.connect("changed", self._search_changed)
+        self.search_entry.connect("key-press-event", self._search_key_press)
+
+        self.search_case = Gtk.ToggleButton(label="Aa")
+        self.search_case.get_style_context().add_class("terminal-search-button")
+        self.search_case.set_tooltip_text("Match case")
+        self.search_case.connect("toggled", self._search_changed)
+
+        previous = Gtk.Button(label="↑")
+        previous.get_style_context().add_class("terminal-search-button")
+        previous.set_tooltip_text("Previous match (Shift+Enter)")
+        previous.connect("clicked", lambda *_args: self._find_search_match(False))
+        next_button = Gtk.Button(label="↓")
+        next_button.get_style_context().add_class("terminal-search-button")
+        next_button.set_tooltip_text("Next match (Enter)")
+        next_button.connect("clicked", lambda *_args: self._find_search_match(True))
+
+        self.search_project = Gtk.Button(label="PROJECT")
+        self.search_project.get_style_context().add_class("terminal-search-button")
+        self.search_project.set_tooltip_text(
+            "Search output from every session in this project"
+        )
+        self.search_project.connect(
+            "clicked",
+            lambda *_args: self.on_project_search(
+                self.search_entry.get_text(), self.search_case.get_active()
+            ),
+        )
+
+        self.search_status = Gtk.Label(label="", xalign=0)
+        self.search_status.get_style_context().add_class("terminal-search-status")
+
+        close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
+        close.get_style_context().add_class("terminal-search-button")
+        close.set_tooltip_text("Close search (Esc)")
+        close.connect("clicked", lambda *_args: self.close_search())
+
+        bar.pack_start(self.search_entry, True, True, 0)
+        bar.pack_start(self.search_case, False, False, 0)
+        bar.pack_start(previous, False, False, 0)
+        bar.pack_start(next_button, False, False, 0)
+        bar.pack_start(self.search_project, False, False, 0)
+        bar.pack_start(self.search_status, False, False, 4)
+        bar.pack_end(close, False, False, 0)
+        self.search_revealer.add(bar)
+        self.pack_start(self.search_revealer, False, False, 0)
+
+    def _search_size_allocate(
+        self, _bar: Gtk.Widget, allocation: Gdk.Rectangle
+    ) -> None:
+        self._set_responsive_visibility(self.search_status, allocation.width >= 620)
+        self._set_responsive_visibility(self.search_project, allocation.width >= 480)
+        self._set_responsive_visibility(self.search_case, allocation.width >= 360)
+
+    def open_search(self, query: Optional[str] = None) -> None:
+        self.search_revealer.set_reveal_child(True)
+        self.search_revealer.show_all()
+        if query is not None and query != self.search_entry.get_text():
+            self.search_entry.set_text(query)
+        else:
+            self._search_changed()
+        self.search_entry.grab_focus()
+        self.search_entry.select_region(0, -1)
+
+    def close_search(self) -> None:
+        self.terminal.search_set_regex(None, 0)
+        self.search_revealer.set_reveal_child(False)
+        self.terminal.grab_focus()
+
+    def _search_changed(self, *_args: Any) -> None:
+        query = self.search_entry.get_text()
+        regex = literal_search_regex(query, self.search_case.get_active())
+        self.terminal.search_set_regex(regex, 0)
+        self.terminal.search_set_wrap_around(True)
+        if not regex:
+            self._set_search_status("")
+            return
+        self._set_search_status("" if self.terminal.search_find_next() else "NO MATCH")
+
+    def _find_search_match(self, forward: bool) -> bool:
+        if not self.search_entry.get_text():
+            self.search_entry.grab_focus()
+            return False
+        found = (
+            self.terminal.search_find_next()
+            if forward
+            else self.terminal.search_find_previous()
+        )
+        self._set_search_status("" if found else "NO MATCH")
+        return found
+
+    def _set_search_status(self, text: str) -> None:
+        context = self.search_status.get_style_context()
+        if text:
+            context.add_class("no-match")
+        else:
+            context.remove_class("no-match")
+        self.search_status.set_text(text)
+
+    def _search_key_press(self, _entry: Gtk.Entry, event: Gdk.EventKey) -> bool:
+        if event.keyval == Gdk.KEY_Escape:
+            self.close_search()
+            return True
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            backwards = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+            self._find_search_match(not backwards)
+            return True
+        return False
 
     def _build_hud(self) -> None:
         hud = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -516,6 +757,14 @@ class TerminalView(Gtk.Box):
         self.terminal.set_color_cursor(self._color("#f0abfc"))
         self.terminal.set_color_highlight(self._color("#3a315d"))
 
+    def _configure_url_matching(self) -> None:
+        flags = PCRE2_UTF | PCRE2_UCP | PCRE2_CASELESS
+        self._url_regex = Vte.Regex.new_for_match(
+            URL_PATTERN, len(URL_PATTERN.encode("utf-8")), flags
+        )
+        self._url_match_tag = self.terminal.match_add_regex(self._url_regex, 0)
+        self.terminal.match_set_cursor_name(self._url_match_tag, "pointer")
+
     @staticmethod
     def _color(value: str) -> Gdk.RGBA:
         color = Gdk.RGBA()
@@ -545,8 +794,11 @@ class TerminalView(Gtk.Box):
             return True
         control = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+        if control and shift and event.keyval in (Gdk.KEY_F, Gdk.KEY_f):
+            self.open_search()
+            return True
         if control and shift and event.keyval in (Gdk.KEY_C, Gdk.KEY_c):
-            self.terminal.copy_clipboard_format(Vte.Format.TEXT)
+            self.copy_selection()
             return True
         if control and shift and event.keyval in (Gdk.KEY_V, Gdk.KEY_v):
             self.terminal.paste_clipboard()
@@ -577,14 +829,93 @@ class TerminalView(Gtk.Box):
         return False
 
     def _on_pointer_event(self, _widget: Gtk.Widget, event: Gdk.Event) -> bool:
-        """Keep plain left-button dragging available for native VTE selection."""
+        """Route plain drags through tmux history and Shift-drags through VTE."""
         has_button, button = event.get_button()
         has_state, state = event.get_state()
         is_left_button = has_button and button == 1
         is_left_drag = has_state and bool(state & Gdk.ModifierType.BUTTON1_MASK)
-        if is_left_button or is_left_drag:
-            event.state = state | Gdk.ModifierType.SHIFT_MASK
+        native_selection = has_state and bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+        if is_left_button and event.type == Gdk.EventType.BUTTON_PRESS:
+            self._stop_selection_autoscroll()
+            self._selection_drag_active = not native_selection
+            self._selection_drag_happened = False
+        elif is_left_button and event.type == Gdk.EventType.BUTTON_RELEASE:
+            should_copy = self._selection_drag_active and self._selection_drag_happened
+            self._selection_drag_active = False
+            self._selection_drag_happened = False
+            self._stop_selection_autoscroll()
+            if should_copy:
+                self._schedule_tmux_clipboard_sync()
+
+        if is_left_drag and event.type == Gdk.EventType.MOTION_NOTIFY:
+            has_coords, _pointer_x, pointer_y = event.get_coords()
+            if has_coords and _widget is not None:
+                terminal_height = _widget.get_allocated_height()
+                edge_size = max(6.0, min(12.0, _widget.get_char_height() / 2))
+                if native_selection:
+                    event.motion.y = selection_autoscroll_y(
+                        pointer_y, terminal_height, edge_size
+                    )
+                elif self._selection_drag_active:
+                    self._selection_drag_happened = True
+                    self._selection_scroll_lines = selection_autoscroll_lines(
+                        pointer_y, terminal_height, edge_size
+                    )
+                    if self._selection_scroll_lines:
+                        self._start_selection_autoscroll()
+                    else:
+                        self._stop_selection_autoscroll()
         return False
+
+    def _start_selection_autoscroll(self) -> None:
+        if self._selection_autoscroll_timer_id is None:
+            self._selection_autoscroll_timer_id = GLib.timeout_add(
+                80, self._selection_autoscroll_tick
+            )
+
+    def _stop_selection_autoscroll(self) -> None:
+        if self._selection_autoscroll_timer_id is not None:
+            GLib.source_remove(self._selection_autoscroll_timer_id)
+            self._selection_autoscroll_timer_id = None
+        self._selection_scroll_lines = 0
+
+    def _selection_autoscroll_tick(self) -> bool:
+        if not self._selection_drag_active or not self._selection_scroll_lines:
+            self._selection_autoscroll_timer_id = None
+            return False
+        self.backend.scroll_selection(
+            self.session.tmux_name, self._selection_scroll_lines
+        )
+        return True
+
+    def _schedule_tmux_clipboard_sync(self) -> None:
+        if self._selection_clipboard_timer_id is not None:
+            GLib.source_remove(self._selection_clipboard_timer_id)
+        self._selection_clipboard_timer_id = GLib.timeout_add(
+            80, self._sync_tmux_selection_clipboard
+        )
+
+    def _sync_tmux_selection_clipboard(self) -> bool:
+        self._selection_clipboard_timer_id = None
+        value = self.backend.capture_buffer()
+        if value is not None:
+            self._copy_text(value)
+        return False
+
+    def _selection_destroyed(self, *_args: Any) -> None:
+        self._stop_selection_autoscroll()
+        if self._selection_clipboard_timer_id is not None:
+            GLib.source_remove(self._selection_clipboard_timer_id)
+            self._selection_clipboard_timer_id = None
+
+    def copy_selection(self) -> None:
+        if self.terminal.get_has_selection():
+            self.terminal.copy_clipboard_format(Vte.Format.TEXT)
+            return
+        value = self.backend.capture_buffer()
+        if value is not None:
+            self._copy_text(value)
 
     def _on_button_press(
         self, _widget: Gtk.Widget, event: Gdk.EventButton
@@ -592,12 +923,17 @@ class TerminalView(Gtk.Box):
         if event.button != 3:
             return False
         menu = Gtk.Menu()
+        uri = self._uri_at_event(event)
+        if uri:
+            open_link = Gtk.MenuItem(label="Open Link")
+            open_link.connect("activate", lambda *_args: self.on_open_uri(uri))
+            copy_link = Gtk.MenuItem(label="Copy Link")
+            copy_link.connect("activate", lambda *_args: self._copy_text(uri))
+            menu.append(open_link)
+            menu.append(copy_link)
+            menu.append(Gtk.SeparatorMenuItem())
         copy_item = Gtk.MenuItem(label="Copy")
-        copy_item.set_sensitive(self.terminal.get_has_selection())
-        copy_item.connect(
-            "activate",
-            lambda *_args: self.terminal.copy_clipboard_format(Vte.Format.TEXT),
-        )
+        copy_item.connect("activate", lambda *_args: self.copy_selection())
         paste_item = Gtk.MenuItem(label="Paste")
         paste_item.connect("activate", lambda *_args: self.terminal.paste_clipboard())
         select_all_item = Gtk.MenuItem(label="Select All")
@@ -609,6 +945,24 @@ class TerminalView(Gtk.Box):
         menu.show_all()
         menu.popup_at_pointer(event)
         return True
+
+    def _uri_at_event(self, event: Gdk.EventButton) -> Optional[str]:
+        uri = self.terminal.hyperlink_check_event(event)
+        if not uri:
+            matched = self.terminal.match_check_event(event)
+            if isinstance(matched, tuple):
+                value, tag = matched
+                if tag == self._url_match_tag:
+                    uri = value
+            elif isinstance(matched, str):
+                uri = matched
+        return normalized_url(uri) if uri else None
+
+    @staticmethod
+    def _copy_text(value: str) -> None:
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(value, -1)
+        clipboard.store()
 
     def _on_focus_in(self, *_args: Any) -> bool:
         self.on_focus(self.session.id)
@@ -933,9 +1287,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self._usage_sampler = ProcessUsageSampler()
         self._git_cache = GitInfoCache()
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="metadata")
+        self._search_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="output-search"
+        )
         self._snapshot_timer_id: Optional[int] = None
         self._closing = False
         self._status_overrides: dict[str, AgentStatus] = {}
+        self._attention_ids: list[str] = []
         self.get_style_context().add_class("mujterm-window")
         self.set_default_size(1180, 760)
         self.set_size_request(760, 480)
@@ -958,10 +1316,14 @@ class MainWindow(Gtk.ApplicationWindow):
             GLib.source_remove(self._snapshot_timer_id)
             self._snapshot_timer_id = None
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self._search_executor.shutdown(wait=False, cancel_futures=True)
 
     def _build_header(self) -> None:
         header = Gtk.HeaderBar(show_close_button=True)
         header.get_style_context().add_class("mujterm-header")
+        accelerator = Gtk.AccelGroup()
+        self.add_accel_group(accelerator)
+
         identity = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
         mark = Gtk.Label(label=">_")
         mark.get_style_context().add_class("brand-mark")
@@ -975,14 +1337,7 @@ class MainWindow(Gtk.ApplicationWindow):
         identity.pack_start(mark, False, False, 0)
         identity.pack_start(identity_copy, False, False, 0)
         header.set_custom_title(identity)
-        project_button = Gtk.Button.new_from_icon_name("folder-new-symbolic", Gtk.IconSize.BUTTON)
-        project_button.get_style_context().add_class("hud-button")
-        project_button.set_tooltip_text("Open project")
-        project_button.connect("clicked", lambda *_args: self.open_project_dialog())
-        ssh_button = Gtk.Button(label="SSH")
-        ssh_button.get_style_context().add_class("hud-button")
-        ssh_button.set_tooltip_text("New SSH project")
-        ssh_button.connect("clicked", lambda *_args: self.open_ssh_project_dialog())
+
         terminal_button = Gtk.Button.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON)
         terminal_button.get_style_context().add_class("hud-button")
         terminal_button.set_tooltip_text("New terminal (Ctrl+Shift+T)")
@@ -1001,49 +1356,59 @@ class MainWindow(Gtk.ApplicationWindow):
         self.toolbox_button.get_style_context().add_class("hud-button")
         self.toolbox_button.set_tooltip_text("Command toolbox")
         self._build_toolbox_popover()
-        timeline_button = Gtk.Button.new_from_icon_name("document-open-recent-symbolic", Gtk.IconSize.BUTTON)
-        timeline_button.get_style_context().add_class("hud-button")
-        timeline_button.set_tooltip_text("Project timeline")
-        timeline_button.connect("clicked", lambda *_args: self.show_timeline())
-        handoff_button = Gtk.Button(label="⇄")
-        handoff_button.get_style_context().add_class("hud-button")
-        handoff_button.set_tooltip_text("Create agent handoff")
-        handoff_button.connect("clicked", lambda *_args: self.show_handoff())
-        race_button = Gtk.Button(label="A/B")
-        race_button.get_style_context().add_class("hud-button")
-        race_button.set_tooltip_text("Run Codex and Claude in parallel worktrees")
-        race_button.connect("clicked", lambda *_args: self.show_agent_races())
-        map_button = Gtk.Button.new_from_icon_name("network-workgroup-symbolic", Gtk.IconSize.BUTTON)
-        map_button.get_style_context().add_class("hud-button")
-        map_button.set_tooltip_text("Service dependency map")
-        map_button.connect("clicked", lambda *_args: self.show_service_map())
-        self.keyboard_mode_button = Gtk.Button(label="KEYS")
-        self.keyboard_mode_button.get_style_context().add_class("hud-button")
-        self.keyboard_mode_button.set_tooltip_text("Keyboard mode (Ctrl+Space)")
-        self.keyboard_mode_button.connect("clicked", lambda *_args: self.toggle_keyboard_mode())
-        settings_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic", Gtk.IconSize.BUTTON)
-        settings_button.get_style_context().add_class("hud-button")
-        settings_button.set_tooltip_text("Agent integrations")
-        settings_button.connect("clicked", lambda *_args: self.show_integration_dialog())
-        header.pack_start(project_button)
-        header.pack_start(ssh_button)
+
+        self.header_attention_button = Gtk.Button(label="ATTN")
+        self.header_attention_button.get_style_context().add_class("hud-button")
+        self.header_attention_button.set_sensitive(False)
+        self.header_attention_button.set_tooltip_text("No agent currently needs attention")
+        self.header_attention_button.connect(
+            "clicked", lambda *_args: self.select_next_attention()
+        )
+
+        overflow_button = Gtk.MenuButton(label="⋯")
+        overflow_button.get_style_context().add_class("hud-button")
+        overflow_button.get_style_context().add_class("overflow-button")
+        overflow_button.set_tooltip_text("More actions")
+        overflow = Gtk.Menu()
+
+        def add_item(label: str, callback: Callable[[], None]) -> Gtk.MenuItem:
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda *_args: callback())
+            overflow.append(item)
+            return item
+
+        add_item("Open Project…", self.open_project_dialog)
+        add_item("New SSH Project…", self.open_ssh_project_dialog)
+        overflow.append(Gtk.SeparatorMenuItem())
+        search_item = add_item("Find in Terminal Output", self.show_terminal_search)
+        add_item("Find in Project Output…", self.show_project_search)
+        overflow.append(Gtk.SeparatorMenuItem())
+        add_item("Project Timeline…", self.show_timeline)
+        add_item("Create Agent Handoff…", self.show_handoff)
+        add_item("Codex ↔ Claude Races…", self.show_agent_races)
+        add_item("Service Dependency Map…", self.show_service_map)
+        overflow.append(Gtk.SeparatorMenuItem())
+        self.keyboard_mode_item = Gtk.CheckMenuItem(label="Keyboard Navigation Mode")
+        self.keyboard_mode_item.set_tooltip_text("Toggle with Ctrl+Space")
+        self.keyboard_mode_item.connect(
+            "toggled", lambda item: self._set_keyboard_mode(item.get_active())
+        )
+        overflow.append(self.keyboard_mode_item)
+        add_item("Agent Integrations…", self.show_integration_dialog)
+        overflow.show_all()
+        overflow_button.set_popup(overflow)
+
         header.pack_start(terminal_button)
         header.pack_start(split_right)
         header.pack_start(split_down)
         header.pack_start(self.toolbox_button)
-        header.pack_end(settings_button)
-        header.pack_end(timeline_button)
-        header.pack_end(map_button)
-        header.pack_end(race_button)
-        header.pack_end(handoff_button)
-        header.pack_end(self.keyboard_mode_button)
+        header.pack_end(overflow_button)
+        header.pack_end(self.header_attention_button)
         self.set_titlebar(header)
-        accelerator = Gtk.AccelGroup()
-        self.add_accel_group(accelerator)
         terminal_button.add_accelerator("clicked", accelerator, Gdk.KEY_T, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
         split_right.add_accelerator("clicked", accelerator, Gdk.KEY_Right, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
         split_down.add_accelerator("clicked", accelerator, Gdk.KEY_Down, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
-        self.keyboard_mode_button.add_accelerator("clicked", accelerator, Gdk.KEY_space, Gdk.ModifierType.CONTROL_MASK, Gtk.AccelFlags.VISIBLE)
+        search_item.add_accelerator("activate", accelerator, Gdk.KEY_F, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
 
     def _build_toolbox_popover(self) -> None:
         self.toolbox_popover = Gtk.Popover.new(self.toolbox_button)
@@ -1723,6 +2088,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._terminal_child_exit,
                 self._terminal_focused,
                 self._keyboard_mode_key,
+                self.open_uri,
+                self.show_project_search,
             )
             self.terminal_views[terminal.id] = view
         return view
@@ -1755,18 +2122,18 @@ class MainWindow(Gtk.ApplicationWindow):
         return None
 
     def toggle_keyboard_mode(self) -> None:
-        self.keyboard_mode = not self.keyboard_mode
-        context = self.keyboard_mode_button.get_style_context()
-        if self.keyboard_mode:
-            context.add_class("keyboard-mode-on")
-            self.keyboard_mode_button.set_label("KEY MODE")
-            self.keyboard_mode_button.set_tooltip_text(
-                "h/j/k/l move · [/] workspace · n new · v split right · s split down · x close · a attention · q exit"
-            )
-        else:
-            context.remove_class("keyboard-mode-on")
-            self.keyboard_mode_button.set_label("KEYS")
-            self.keyboard_mode_button.set_tooltip_text("Keyboard mode (Ctrl+Space)")
+        self._set_keyboard_mode(not self.keyboard_mode)
+
+    def _set_keyboard_mode(self, enabled: bool) -> None:
+        self.keyboard_mode = enabled
+        if self.keyboard_mode_item.get_active() != enabled:
+            self.keyboard_mode_item.set_active(enabled)
+        self.keyboard_mode_item.set_tooltip_text(
+            "h/j/k/l move · [/] workspace · n new · v split right · "
+            "s split down · x close · a attention · q exit"
+            if enabled
+            else "Toggle with Ctrl+Space"
+        )
 
     def _keyboard_mode_key(self, event: Gdk.EventKey) -> bool:
         control = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
@@ -1988,11 +2355,227 @@ class MainWindow(Gtk.ApplicationWindow):
         self.database.reorder_projects(ids)
         self.rebuild_sidebar()
 
-    def open_service(self, port: int) -> None:
+    def show_terminal_search(self) -> None:
+        if not self.active_terminal_id:
+            self._error("No active terminal", "Select a terminal before searching output.")
+            return
+        terminal = self.database.get_terminal(self.active_terminal_id)
+        if terminal:
+            self._ensure_terminal_view(terminal).open_search()
+
+    def show_project_search(
+        self, initial_query: str = "", initial_case_sensitive: bool = False
+    ) -> None:
+        active = (
+            self.database.get_terminal(self.active_terminal_id)
+            if self.active_terminal_id
+            else None
+        )
+        if not active:
+            self._error("No active terminal", "Select a terminal before searching output.")
+            return
+        project = (
+            self.database.get_project(active.project_id) if active.project_id else None
+        )
+        terminals = (
+            [
+                terminal
+                for terminal in self.database.list_terminals(project.id)
+                if terminal.project_id == project.id
+            ]
+            if project
+            else self.database.list_ungrouped_terminals()
+        )
+        scope_name = project.name if project else "Ungrouped"
+        dialog = Gtk.Dialog(
+            title=f"Search output — {scope_name}", transient_for=self, modal=True
+        )
+        dialog.set_default_size(680, 500)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        content = dialog.get_content_area()
+        content.set_border_width(12)
+        content.set_spacing(8)
+
+        search_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Search every terminal session in this project")
+        match_case = Gtk.ToggleButton(label="Aa")
+        match_case.get_style_context().add_class("terminal-search-button")
+        match_case.set_tooltip_text("Match case")
+        search_controls.pack_start(search, True, True, 0)
+        search_controls.pack_start(match_case, False, False, 0)
+        content.pack_start(search_controls, False, False, 0)
+
+        progress = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
+        spinner = Gtk.Spinner()
+        status = Gtk.Label(label="Type to search captured tmux history.", xalign=0)
+        status.get_style_context().add_class("terminal-search-status")
+        progress.pack_start(spinner, False, False, 0)
+        progress.pack_start(status, True, True, 0)
+        content.pack_start(progress, False, False, 0)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        results = Gtk.ListBox()
+        results.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        results.set_activate_on_single_click(True)
+        scrolled.add(results)
+        content.pack_start(scrolled, True, True, 0)
+
+        state: dict[str, Any] = {
+            "closed": False,
+            "generation": 0,
+            "timeout": None,
+        }
+        row_terminals: dict[Gtk.ListBoxRow, str] = {}
+        selected: dict[str, Any] = {}
+
+        def clear_results() -> None:
+            row_terminals.clear()
+            for child in results.get_children():
+                results.remove(child)
+
+        def apply_results(
+            generation: int,
+            query: str,
+            future: concurrent.futures.Future[
+                list[tuple[TerminalSession, int, tuple[str, ...]]]
+            ],
+        ) -> bool:
+            if state["closed"] or generation != state["generation"]:
+                return False
+            spinner.stop()
+            spinner.hide()
+            clear_results()
+            try:
+                matches = future.result()
+            except Exception as exc:
+                status.set_text(f"Search failed: {exc}")
+                return False
+            total = sum(count for _terminal, count, _previews in matches)
+            status.set_text(
+                f"{total} matches in {len(matches)} of {len(terminals)} sessions"
+                if total
+                else f'No matches for "{query}" in {len(terminals)} sessions'
+            )
+            for terminal, count, previews in matches:
+                row = Gtk.ListBoxRow()
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+                box.set_border_width(8)
+                title = Gtk.Label(
+                    label=f"{terminal.name}  ·  {count} matches", xalign=0
+                )
+                title.set_ellipsize(Pango.EllipsizeMode.END)
+                box.pack_start(title, False, False, 0)
+                for preview in previews:
+                    snippet = Gtk.Label(label=preview, xalign=0)
+                    snippet.set_ellipsize(Pango.EllipsizeMode.END)
+                    snippet.get_style_context().add_class("project-search-snippet")
+                    box.pack_start(snippet, False, False, 0)
+                row.add(box)
+                row_terminals[row] = terminal.id
+                results.add(row)
+            results.show_all()
+            return False
+
+        def run_search(
+            generation: int, query: str, case_sensitive: bool
+        ) -> bool:
+            state["timeout"] = None
+            if state["closed"] or generation != state["generation"]:
+                return False
+            spinner.show()
+            spinner.start()
+            status.set_text(f"Searching {len(terminals)} sessions…")
+            future = self._search_executor.submit(
+                self._collect_project_search, terminals, query, case_sensitive
+            )
+            future.add_done_callback(
+                lambda completed: GLib.idle_add(
+                    apply_results, generation, query, completed
+                )
+            )
+            return False
+
+        def schedule_search(*_args: Any) -> None:
+            state["generation"] += 1
+            timeout_id = state["timeout"]
+            if timeout_id is not None:
+                GLib.source_remove(timeout_id)
+                state["timeout"] = None
+            query = search.get_text()
+            if not query:
+                spinner.stop()
+                spinner.hide()
+                clear_results()
+                status.set_text("Type to search captured tmux history.")
+                return
+            state["timeout"] = GLib.timeout_add(
+                180,
+                run_search,
+                state["generation"],
+                query,
+                match_case.get_active(),
+            )
+
+        def result_activated(_list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+            terminal_id = row_terminals.get(row)
+            if terminal_id:
+                selected["terminal_id"] = terminal_id
+                selected["query"] = search.get_text()
+                selected["case_sensitive"] = match_case.get_active()
+                dialog.response(Gtk.ResponseType.OK)
+
+        search.connect("changed", schedule_search)
+        match_case.connect("toggled", schedule_search)
+        results.connect("row-activated", result_activated)
+        dialog.show_all()
+        spinner.hide()
+        match_case.set_active(initial_case_sensitive)
+        if initial_query:
+            search.set_text(initial_query)
+        search.grab_focus()
+        search.select_region(0, -1)
+        dialog.run()
+        state["closed"] = True
+        timeout_id = state["timeout"]
+        if timeout_id is not None:
+            GLib.source_remove(timeout_id)
+        dialog.destroy()
+
+        terminal_id = selected.get("terminal_id")
+        if terminal_id:
+            self.select_terminal(terminal_id)
+            terminal = self.database.get_terminal(terminal_id)
+            if terminal:
+                view = self._ensure_terminal_view(terminal)
+                view.search_case.set_active(selected["case_sensitive"])
+                view.open_search(selected["query"])
+
+    def _collect_project_search(
+        self,
+        terminals: list[TerminalSession],
+        query: str,
+        case_sensitive: bool = False,
+    ) -> list[tuple[TerminalSession, int, tuple[str, ...]]]:
+        matches: list[tuple[TerminalSession, int, tuple[str, ...]]] = []
+        for terminal in terminals:
+            output = self.backend.capture_output(terminal.tmux_name)
+            count, previews = output_match_summary(
+                output, query, case_sensitive=case_sensitive
+            )
+            if count:
+                matches.append((terminal, count, previews))
+        return matches
+
+    def open_uri(self, uri: str) -> None:
         try:
-            Gio.AppInfo.launch_default_for_uri(f"http://localhost:{port}", None)
+            Gio.AppInfo.launch_default_for_uri(uri, None)
         except GLib.Error as exc:
-            self._error("Could not open service", str(exc))
+            self._error("Could not open link", str(exc))
+
+    def open_service(self, port: int) -> None:
+        self.open_uri(f"http://localhost:{port}")
 
     def service_button_press(self, service: ListeningService, event: Gdk.EventButton) -> bool:
         if event.button != 3:
@@ -2708,6 +3291,22 @@ class MainWindow(Gtk.ApplicationWindow):
             self.attention_items.pack_start(button, False, False, 0)
         self.attention_items.show_all()
         self.attention_revealer.set_reveal_child(bool(self._attention_ids))
+        count = len(self._attention_ids)
+        context = self.header_attention_button.get_style_context()
+        self.header_attention_button.set_sensitive(bool(count))
+        if count:
+            context.add_class("attention-button-active")
+            self.header_attention_button.set_label(f"! {count}")
+            self.header_attention_button.set_tooltip_text(
+                f"Jump to the next of {count} terminals needing attention "
+                "(Ctrl+Shift+A)"
+            )
+        else:
+            context.remove_class("attention-button-active")
+            self.header_attention_button.set_label("ATTN")
+            self.header_attention_button.set_tooltip_text(
+                "No agent currently needs attention"
+            )
 
     def select_next_attention(self) -> None:
         if not getattr(self, "_attention_ids", None):

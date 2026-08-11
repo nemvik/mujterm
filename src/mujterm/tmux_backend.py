@@ -11,6 +11,14 @@ from .models import PaneInfo, TerminalSession
 from .paths import config_dir, ensure_private_dir, runtime_dir
 
 
+TMUX_SELECTION_BINDINGS = (
+    "bind-key -n MouseDown1Pane select-pane -t=",
+    "bind-key -n MouseDrag1Pane copy-mode -M",
+    "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel",
+    "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel",
+)
+
+
 TMUX_CONFIG = """\
 set -g status off
 set -g mouse on
@@ -18,7 +26,7 @@ set -g history-limit 50000
 set -g set-clipboard on
 set -g allow-rename off
 set -g default-terminal \"screen-256color\"
-"""
+""" + "\n".join(TMUX_SELECTION_BINDINGS) + "\n"
 
 
 class TmuxError(RuntimeError):
@@ -53,6 +61,9 @@ class TmuxBackend:
                 lines.append("set -g mouse on")
             else:
                 lines[mouse_option] = "set -g mouse on"
+            for binding in TMUX_SELECTION_BINDINGS:
+                if not any(line.strip() == binding for line in lines):
+                    lines.append(binding)
             content = "\n".join(lines).rstrip() + "\n"
         self.config_path.write_text(content, encoding="utf-8")
         self.config_path.chmod(0o600)
@@ -104,13 +115,13 @@ class TmuxBackend:
         """Type one shell-safe argv command into a managed session."""
         command = shlex.join(arguments)
         result = self._run(
-            ["send-keys", "-t", f"={tmux_name}", "-l", "--", command],
+            ["send-keys", "-t", self._pane_target(tmux_name), "-l", "--", command],
             check=False,
         )
         if result.returncode != 0:
             raise TmuxError(result.stderr.strip() or "Could not send terminal command")
         result = self._run(
-            ["send-keys", "-t", f"={tmux_name}", "Enter"], check=False
+            ["send-keys", "-t", self._pane_target(tmux_name), "Enter"], check=False
         )
         if result.returncode != 0:
             raise TmuxError(result.stderr.strip() or "Could not start terminal command")
@@ -120,11 +131,53 @@ class TmuxBackend:
         if "\n" in text or "\r" in text:
             raise TmuxError("Terminal text must fit on one line")
         result = self._run(
-            ["send-keys", "-t", f"={tmux_name}", "-l", "--", text],
+            ["send-keys", "-t", self._pane_target(tmux_name), "-l", "--", text],
             check=False,
         )
         if result.returncode != 0:
             raise TmuxError(result.stderr.strip() or "Could not insert terminal text")
+
+    def capture_output(self, tmux_name: str) -> str:
+        """Return the visible pane and its tmux history as plain joined lines."""
+        result = self._run(
+            [
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                "-",
+                "-t",
+                self._pane_target(tmux_name),
+            ],
+            check=False,
+            timeout=2,
+        )
+        return result.stdout if result.returncode == 0 else ""
+
+    def scroll_selection(self, tmux_name: str, lines: int) -> bool:
+        """Scroll an active tmux copy-mode selection toward older or newer text."""
+        if not lines:
+            return True
+        command = "cursor-up" if lines < 0 else "cursor-down"
+        result = self._run(
+            [
+                "send-keys",
+                "-t",
+                self._pane_target(tmux_name),
+                "-X",
+                "-N",
+                str(abs(lines)),
+                command,
+            ],
+            check=False,
+            timeout=1,
+        )
+        return result.returncode == 0
+
+    def capture_buffer(self) -> Optional[str]:
+        """Return tmux's most recently copied selection, if one exists."""
+        result = self._run(["show-buffer"], check=False, timeout=1)
+        return result.stdout if result.returncode == 0 else None
 
     def list_panes(self) -> dict[str, PaneInfo]:
         separator = "\x1f"
@@ -202,6 +255,10 @@ class TmuxBackend:
             raise TmuxError("tmux is not installed") from exc
         except subprocess.CalledProcessError as exc:
             raise TmuxError(exc.stderr.strip() or str(exc)) from exc
+
+    @staticmethod
+    def _pane_target(tmux_name: str) -> str:
+        return f"={tmux_name}:"
 
     @staticmethod
     def _safe_cwd(cwd: str) -> str:
