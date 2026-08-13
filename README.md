@@ -27,6 +27,8 @@ an isolated tmux server so terminal processes survive closing the window.
 - Exact Codex and Claude Code states: working, needs input, ready, and error.
 - Safe, opt-in lifecycle hooks that never approve actions or record prompts.
 - Automatic clean-shell recovery after a machine reboot.
+- Private rotating runtime logs and copyable health diagnostics.
+- Transactional state migrations with integrity checks and pre-upgrade backups.
 
 ## Run from the repository
 
@@ -149,6 +151,22 @@ widgets in `sidebar.py`, search in `search.py`, dialogs and menus in `dialogs.py
 and agent handoff/race tools in `agent_tools.py`. The original public imports from
 `mujterm.ui` remain available for compatibility.
 
+## Diagnostics and state safety
+
+MujTerm writes a private rotating log to
+`$XDG_STATE_HOME/mujterm/mujterm.log` (normally
+`~/.local/state/mujterm/mujterm.log`). The active log is limited to roughly
+1 MB and keeps three rotated copies; all log files use mode `0600`. Background
+failures appear in a dismissible warning bar, and **About / Diagnostics…** shows
+the last runtime error, recent log lines, database schema version, and integrity
+status.
+
+The SQLite state database is checked before and after every schema upgrade.
+Migrations run transactionally and an existing database is backed up with a
+`state.db.backup-vOLD-to-vNEW-*` name before any migration starts. A database
+from a newer, unsupported MujTerm release is left untouched and rejected with a
+clear startup error.
+
 ## Tests and packaging
 
 ```sh
@@ -160,5 +178,5 @@ make deb
 The compatibility smoke test drives a real isolated tmux client and verifies
 that `htop` receives both F10 and its clickable Quit control.
 
-The Debian package is written to `dist/mujterm_0.1.2_all.deb`. To rebuild,
+The Debian package is written to `dist/mujterm_0.1.3_all.deb`. To rebuild,
 verify, and reinstall the current source in one step, run `make reinstall`.

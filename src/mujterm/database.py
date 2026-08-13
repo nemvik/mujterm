@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -16,92 +18,228 @@ from .models import (
 from .paths import data_dir, ensure_private_dir
 
 
-SCHEMA = """
-PRAGMA foreign_keys = ON;
+LOGGER = logging.getLogger(__name__)
+SCHEMA_VERSION = 1
+SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        collapsed INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ssh_projects (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        target TEXT NOT NULL,
+        port INTEGER
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS terminals (
+        id TEXT PRIMARY KEY,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        tmux_name TEXT NOT NULL UNIQUE,
+        initial_cwd TEXT NOT NULL,
+        last_cwd TEXT NOT NULL,
+        position INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS terminals_project_position
+    ON terminals(project_id, position)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS toolbox_commands (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        command TEXT NOT NULL,
+        position INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS toolbox_commands_position
+    ON toolbox_commands(position)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS timeline_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT,
+        terminal_id TEXT,
+        terminal_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        created_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS timeline_created_at
+    ON timeline_events(created_at DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS timeline_project_created_at
+    ON timeline_events(project_id, created_at DESC)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_races (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        task TEXT NOT NULL,
+        base_commit TEXT NOT NULL,
+        codex_branch TEXT NOT NULL,
+        claude_branch TEXT NOT NULL,
+        codex_path TEXT NOT NULL,
+        claude_path TEXT NOT NULL,
+        codex_terminal_id TEXT NOT NULL,
+        claude_terminal_id TEXT NOT NULL,
+        created_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS agent_races_project_created_at
+    ON agent_races(project_id, created_at DESC)
+    """,
+)
+MIGRATIONS = {1: SCHEMA_STATEMENTS}
+# Kept as a convenient representation for fixtures and external diagnostics.
+SCHEMA = ";\n".join(statement.strip() for statement in SCHEMA_STATEMENTS) + ";\n"
 
-CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    position INTEGER NOT NULL,
-    collapsed INTEGER NOT NULL DEFAULT 0
-);
 
-CREATE TABLE IF NOT EXISTS ssh_projects (
-    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-    target TEXT NOT NULL,
-    port INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS terminals (
-    id TEXT PRIMARY KEY,
-    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
-    name TEXT NOT NULL,
-    tmux_name TEXT NOT NULL UNIQUE,
-    initial_cwd TEXT NOT NULL,
-    last_cwd TEXT NOT NULL,
-    position INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS terminals_project_position
-ON terminals(project_id, position);
-
-CREATE TABLE IF NOT EXISTS toolbox_commands (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    command TEXT NOT NULL,
-    position INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS toolbox_commands_position
-ON toolbox_commands(position);
-
-CREATE TABLE IF NOT EXISTS timeline_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id TEXT,
-    terminal_id TEXT,
-    terminal_name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    created_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS timeline_created_at
-ON timeline_events(created_at DESC);
-
-CREATE INDEX IF NOT EXISTS timeline_project_created_at
-ON timeline_events(project_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS agent_races (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    task TEXT NOT NULL,
-    base_commit TEXT NOT NULL,
-    codex_branch TEXT NOT NULL,
-    claude_branch TEXT NOT NULL,
-    codex_path TEXT NOT NULL,
-    claude_path TEXT NOT NULL,
-    codex_terminal_id TEXT NOT NULL,
-    claude_terminal_id TEXT NOT NULL,
-    created_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS agent_races_project_created_at
-ON agent_races(project_id, created_at DESC);
-"""
+class DatabaseError(RuntimeError):
+    """The state database could not be opened or migrated safely."""
 
 
 class Database:
     def __init__(self, path: Optional[Path] = None) -> None:
-        if path is None:
-            path = ensure_private_dir(data_dir()) / "state.db"
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path is None:
+                path = ensure_private_dir(data_dir()) / "state.db"
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            database_existed = path.exists() and path.stat().st_size > 0
+        except OSError as exc:
+            raise DatabaseError(f"Could not prepare state database: {exc}") from exc
         self.path = path
-        self.connection = sqlite3.connect(path)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.executescript(SCHEMA)
-        self.connection.commit()
+        self.last_backup_path: Optional[Path] = None
+        self.integrity_status = "unchecked"
+        try:
+            self.connection = sqlite3.connect(path, timeout=5)
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.execute("PRAGMA busy_timeout = 5000")
+            self.integrity_status = self._check_integrity()
+            if self.integrity_status != "ok":
+                raise DatabaseError(
+                    f"Database integrity check failed: {self.integrity_status}"
+                )
+            current_version = self._read_schema_version()
+            if current_version > SCHEMA_VERSION:
+                raise DatabaseError(
+                    "The state database was created by a newer MujTerm version "
+                    f"(schema {current_version}; supported {SCHEMA_VERSION})."
+                )
+            if current_version < SCHEMA_VERSION:
+                if database_existed:
+                    self.last_backup_path = self._create_migration_backup(
+                        current_version, SCHEMA_VERSION
+                    )
+                self._apply_migrations(current_version)
+            self.schema_version = self._read_schema_version()
+            self.integrity_status = self._check_integrity()
+            if self.integrity_status != "ok":
+                raise DatabaseError(
+                    "Database integrity check failed after migration: "
+                    f"{self.integrity_status}"
+                )
+            try:
+                self.path.chmod(0o600)
+            except OSError:
+                pass
+        except DatabaseError:
+            if hasattr(self, "connection"):
+                self.connection.close()
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            if hasattr(self, "connection"):
+                self.connection.close()
+            raise DatabaseError(f"Could not open state database: {exc}") from exc
+
+    def _read_schema_version(self) -> int:
+        row = self.connection.execute("PRAGMA user_version").fetchone()
+        return int(row[0])
+
+    def _check_integrity(self) -> str:
+        rows = self.connection.execute("PRAGMA quick_check").fetchall()
+        messages = [str(row[0]) for row in rows]
+        return "ok" if messages == ["ok"] else "; ".join(messages)
+
+    def _create_migration_backup(
+        self, current_version: int, target_version: int
+    ) -> Path:
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        stem = (
+            f"{self.path.name}.backup-v{current_version}-to-v{target_version}-{stamp}"
+        )
+        backup_path = self.path.with_name(stem)
+        suffix = 1
+        while backup_path.exists():
+            backup_path = self.path.with_name(f"{stem}-{suffix}")
+            suffix += 1
+        destination: Optional[sqlite3.Connection] = None
+        try:
+            destination = sqlite3.connect(backup_path)
+            self.connection.backup(destination)
+            destination.close()
+            destination = None
+            backup_path.chmod(0o600)
+        except (OSError, sqlite3.Error) as exc:
+            if destination is not None:
+                destination.close()
+            try:
+                backup_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise DatabaseError(
+                f"Could not create migration backup at {backup_path}: {exc}"
+            ) from exc
+        LOGGER.info(
+            "Created database migration backup %s (schema %s -> %s)",
+            backup_path,
+            current_version,
+            target_version,
+        )
+        return backup_path
+
+    def _apply_migrations(self, current_version: int) -> None:
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            for target_version in range(current_version + 1, SCHEMA_VERSION + 1):
+                statements = MIGRATIONS.get(target_version)
+                if statements is None:
+                    raise DatabaseError(
+                        f"Missing database migration for schema {target_version}."
+                    )
+                for statement in statements:
+                    self.connection.execute(statement)
+                self.connection.execute(f"PRAGMA user_version = {target_version}")
+            self.connection.commit()
+        except Exception as exc:
+            self.connection.rollback()
+            if isinstance(exc, DatabaseError):
+                raise
+            raise DatabaseError(
+                f"Could not migrate database from schema {current_version} "
+                f"to {SCHEMA_VERSION}: {exc}"
+            ) from exc
+        LOGGER.info(
+            "Migrated database %s from schema %s to %s",
+            self.path,
+            current_version,
+            SCHEMA_VERSION,
+        )
 
     def close(self) -> None:
         self.connection.close()

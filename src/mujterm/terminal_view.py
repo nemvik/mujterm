@@ -21,6 +21,7 @@ from .impact import (
     capture_git_impact,
     compare_git_impact,
 )
+from .logging_config import record_runtime_error
 from .models import AgentStatus, TerminalSession, TerminalSnapshot
 from .search import literal_search_regex
 from .tmux_backend import TmuxBackend
@@ -270,6 +271,7 @@ class TerminalView(Gtk.Box):
         on_key: Callable[[Gdk.EventKey], bool],
         on_open_uri: Callable[[str], None],
         on_project_search: Callable[[str, bool], None],
+        on_runtime_error: Optional[Callable[[str, BaseException | str], None]] = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.get_style_context().add_class("terminal-view")
@@ -281,6 +283,7 @@ class TerminalView(Gtk.Box):
         self.on_key = on_key
         self.on_open_uri = on_open_uri
         self.on_project_search = on_project_search
+        self.on_runtime_error = on_runtime_error
         self._selection_drag_active = False
         self._selection_drag_happened = False
         self._selection_scroll_lines = 0
@@ -1241,6 +1244,10 @@ class TerminalView(Gtk.Box):
         self._show_spawn_error(error)
 
     def _show_spawn_error(self, error: BaseException) -> None:
+        if self.on_runtime_error is not None:
+            self.on_runtime_error("Terminal attach failed", error)
+        else:
+            record_runtime_error("Terminal attach failed", error)
         if not self._destroyed:
             self.terminal.feed(
                 f"\r\nMujTerm could not attach to tmux: {error}\r\n".encode()

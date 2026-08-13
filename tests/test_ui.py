@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import gi
 
@@ -42,6 +43,48 @@ class TerminalViewTests(unittest.TestCase):
     def test_url_pattern_matches_http_and_plain_web_addresses(self) -> None:
         self.assertIsNotNone(re.fullmatch(URL_PATTERN, "https://example.com/path"))
         self.assertIsNotNone(re.fullmatch(URL_PATTERN, "www.example.com/path"))
+
+    def test_background_snapshot_failure_is_reported_to_the_window(self) -> None:
+        future: concurrent.futures.Future[dict[str, object]] = (
+            concurrent.futures.Future()
+        )
+        failure = RuntimeError("tmux snapshot failed")
+        future.set_exception(failure)
+        window = SimpleNamespace(_closing=False, report_runtime_error=Mock())
+
+        result = MainWindow._snapshot_done(window, future)
+
+        self.assertFalse(result)
+        window.report_runtime_error.assert_called_once_with(
+            "Background monitoring failed", failure
+        )
+
+    def test_runtime_error_is_logged_and_shown_without_duplicate_log_spam(self) -> None:
+        window = SimpleNamespace(
+            _last_runtime_warning_key=None,
+            _last_runtime_warning_at=0.0,
+            runtime_banner_label=Mock(),
+            runtime_banner=Mock(),
+        )
+        failure = RuntimeError("tmux unavailable")
+
+        with patch("mujterm.ui.record_runtime_error") as record, patch(
+            "mujterm.ui.time.monotonic", side_effect=(100.0, 101.0)
+        ):
+            MainWindow.report_runtime_error(
+                window, "Background monitoring failed", failure
+            )
+            MainWindow.report_runtime_error(
+                window, "Background monitoring failed", failure
+            )
+
+        record.assert_called_once_with("Background monitoring failed", failure)
+        window.runtime_banner_label.set_text.assert_called_with(
+            "Background monitoring failed: tmux unavailable — details are "
+            "available in Diagnostics."
+        )
+        window.runtime_banner.set_no_show_all.assert_called_with(False)
+        self.assertEqual(window.runtime_banner.show_all.call_count, 2)
 
     @staticmethod
     def _snapshot(

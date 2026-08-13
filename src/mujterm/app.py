@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gio, Gtk  # noqa: E402
 
 from .agent_listener import AgentSocketListener
-from .database import Database
+from .database import Database, DatabaseError
 from .integrations import IntegrationManager
+from .logging_config import record_runtime_error
 from .tmux_backend import TmuxBackend, TmuxError
 from .ui import MainWindow
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def disable_menu_bar_accelerator(settings: Optional[Gtk.Settings] = None) -> None:
@@ -44,24 +49,38 @@ class MujTermApplication(Gtk.Application):
         if self.window:
             self.window.present()
             return
-        self.database = Database()
-        backend = TmuxBackend()
+        try:
+            self.database = Database()
+        except DatabaseError as exc:
+            record_runtime_error("State database initialization failed", exc)
+            self._fatal("Could not open MujTerm state", str(exc))
+            return
+        try:
+            backend = TmuxBackend()
+        except (OSError, TmuxError) as exc:
+            record_runtime_error("tmux initialization failed", exc)
+            self._fatal("Could not initialize tmux", str(exc))
+            return
         if not backend.available():
             self._fatal("tmux is required", "Install tmux and launch MujTerm again.")
             return
         try:
             self.window = MainWindow(self, self.database, backend, IntegrationManager())
         except TmuxError as exc:
+            record_runtime_error("Workspace restoration failed", exc)
             self._fatal("Could not initialize tmux", str(exc))
             return
         self.listener = AgentSocketListener(self._agent_event)
         try:
             self.listener.start()
-        except OSError:
+        except OSError as exc:
+            self.window.report_runtime_error("Agent event listener failed", exc)
             self.listener = None
         self.window.show_all()
+        LOGGER.info("MujTerm window activated")
 
     def do_shutdown(self) -> None:
+        LOGGER.info("Shutting down MujTerm")
         if self.window:
             self.window.shutdown()
         if self.listener:

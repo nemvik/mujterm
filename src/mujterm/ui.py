@@ -15,6 +15,7 @@ from .agent_tools import AgentToolsMixin
 from .database import Database
 from .dialogs import WindowDialogsMixin
 from .integrations import IntegrationError, IntegrationManager
+from .logging_config import record_runtime_error
 from .metadata import (
     GitInfoCache,
     ProcessUsageSampler,
@@ -396,6 +397,7 @@ CSS = b"""
 }
 .primary-action:hover { background-image: linear-gradient(to right, #77edfb, #8affca); }
 .mujterm-infobar { background: #102131; color: #b9d9ef; border-bottom: 1px solid #24516a; }
+.mujterm-runtime-error { background: #352516; color: #ffe7bd; border-bottom: 1px solid #805b2a; }
 
 /* High-contrast pastel theme */
 .mujterm-window, .mujterm-root { background: #090d18; color: #f8fafc; }
@@ -480,6 +482,7 @@ CSS = b"""
 }
 .primary-action:hover { background-image: linear-gradient(to right, #ddd6fe, #f5d0fe 52%, #cffafe); }
 .mujterm-infobar { background: #24213a; color: #f5f3ff; border-bottom-color: #7c6faf; }
+.mujterm-runtime-error { background: #3a2830; color: #ffe4e8; border-bottom-color: #936071; }
 """
 
 
@@ -521,6 +524,8 @@ class MainWindow(
         )
         self._snapshot_timer_id: Optional[int] = None
         self._closing = False
+        self._last_runtime_warning_key: Optional[str] = None
+        self._last_runtime_warning_at = 0.0
         self._status_overrides: dict[str, AgentStatus] = {}
         self._attention_ids: list[str] = []
         self.get_style_context().add_class("mujterm-window")
@@ -771,6 +776,7 @@ class MainWindow(
         try:
             self.backend.send_text(terminal.tmux_name, item.command)
         except TmuxError as exc:
+            record_runtime_error("Command insertion failed", exc)
             self.toolbox_popover.popdown()
             self._error("Could not insert command", str(exc))
             return
@@ -793,6 +799,18 @@ class MainWindow(
         self.banner.add_button("Not now", Gtk.ResponseType.CLOSE)
         self.banner.connect("response", self._banner_response)
         outer.pack_start(self.banner, False, False, 0)
+        self.runtime_banner = Gtk.InfoBar()
+        self.runtime_banner.get_style_context().add_class("mujterm-runtime-error")
+        self.runtime_banner.set_message_type(Gtk.MessageType.WARNING)
+        self.runtime_banner_label = Gtk.Label(xalign=0)
+        self.runtime_banner_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.runtime_banner.get_content_area().add(self.runtime_banner_label)
+        self.runtime_banner.add_button("Diagnostics", Gtk.ResponseType.APPLY)
+        self.runtime_banner.add_button("Dismiss", Gtk.ResponseType.CLOSE)
+        self.runtime_banner.connect("response", self._runtime_banner_response)
+        self.runtime_banner.set_no_show_all(True)
+        self.runtime_banner.hide()
+        outer.pack_start(self.runtime_banner, False, False, 0)
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         outer.pack_start(paned, True, True, 0)
         sidebar_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -902,6 +920,7 @@ class MainWindow(
                 try:
                     self._start_project_connection(terminal)
                 except TmuxError as exc:
+                    record_runtime_error("SSH session restoration failed", exc)
                     self._record_event(
                         terminal, "terminal", f"SSH reconnect failed: {exc}"
                     )
@@ -974,6 +993,7 @@ class MainWindow(
             self.backend.create_session(terminal)
             connection = self._start_project_connection(terminal)
         except TmuxError as exc:
+            record_runtime_error("Terminal creation failed", exc)
             self.backend.kill_session(terminal.tmux_name)
             self.database.delete_terminal(terminal.id)
             self._error("Could not create terminal", str(exc))
@@ -1100,6 +1120,7 @@ class MainWindow(
                 self._keyboard_mode_key,
                 self.open_uri,
                 self.show_project_search,
+                self.report_runtime_error,
             )
             self.terminal_views[terminal.id] = view
         return view
@@ -1378,9 +1399,34 @@ class MainWindow(
                 self.integrations.install()
                 self._set_banner_visible(False)
             except IntegrationError as exc:
+                record_runtime_error("Agent integration setup failed", exc)
                 self._error("Could not update agent configuration", str(exc))
         else:
             self._set_banner_visible(False)
+
+    def report_runtime_error(
+        self, context: str, error: BaseException | str
+    ) -> None:
+        message = str(error).strip() or type(error).__name__
+        key = f"{context}\0{type(error).__name__}\0{message}"
+        now = time.monotonic()
+        if key != self._last_runtime_warning_key or now - self._last_runtime_warning_at >= 30:
+            record_runtime_error(context, error)
+            self._last_runtime_warning_key = key
+            self._last_runtime_warning_at = now
+        self.runtime_banner_label.set_text(
+            f"{context}: {message} — details are available in Diagnostics."
+        )
+        self.runtime_banner.set_no_show_all(False)
+        self.runtime_banner.show_all()
+
+    def _runtime_banner_response(
+        self, _banner: Gtk.InfoBar, response: int
+    ) -> None:
+        self.runtime_banner.set_no_show_all(True)
+        self.runtime_banner.hide()
+        if response == Gtk.ResponseType.APPLY:
+            self.show_diagnostics()
 
     def agent_event_received(self, payload: dict[str, Any]) -> None:
         GLib.idle_add(self._handle_agent_event, payload)
@@ -1474,7 +1520,8 @@ class MainWindow(
             return False
         try:
             snapshots = future.result()
-        except Exception:
+        except Exception as exc:
+            self.report_runtime_error("Background monitoring failed", exc)
             return False
         self._record_snapshot_events(self.snapshots, snapshots)
         self.snapshots = snapshots

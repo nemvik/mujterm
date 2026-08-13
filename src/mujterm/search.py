@@ -10,6 +10,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
 from gi.repository import GLib, Gtk, Pango, Vte  # noqa: E402
 
+from .logging_config import record_runtime_error
 from .models import TerminalSession
 
 
@@ -148,6 +149,7 @@ class SearchMixin:
             try:
                 matches = future.result()
             except Exception as exc:
+                record_runtime_error("Project output search failed", exc)
                 status.set_text(f"Search failed: {exc}")
                 return False
             total = sum(count for _terminal, count, _previews in matches)
@@ -265,5 +267,4 @@ class SearchMixin:
             if count:
                 matches.append((terminal, count, previews))
         return matches
-
 

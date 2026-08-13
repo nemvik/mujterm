@@ -8,6 +8,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gtk, Pango  # noqa: E402
 
+from .logging_config import record_runtime_error
 from .models import AgentKind, AgentRace, Project, TerminalSession
 from .terminal_view import resource_text
 from .tmux_backend import TmuxError
@@ -114,6 +115,7 @@ class AgentToolsMixin:
         try:
             self.backend.send_command(terminal.tmux_name, [agent.value, card])
         except TmuxError as exc:
+            record_runtime_error(f"Starting {agent.value} handoff failed", exc)
             self._error(f"Could not start {agent.value}", str(exc))
         self._record_event(terminal, "handoff", f"Started {agent.value} from {source.name}")
         self.rebuild_sidebar()
@@ -162,6 +164,7 @@ class AgentToolsMixin:
         try:
             worktrees = create_race_worktrees(project.id, project.root_path, task)
         except WorktreeError as exc:
+            record_runtime_error("Agent race worktree creation failed", exc)
             self._error("Could not start agent race", str(exc))
             return
         codex = self.create_terminal(project.id, worktrees.codex_path, activate=True)
@@ -195,6 +198,7 @@ class AgentToolsMixin:
             try:
                 self.backend.send_command(terminal.tmux_name, [executable, prompt])
             except TmuxError as exc:
+                record_runtime_error(f"Starting {executable} race terminal failed", exc)
                 errors.append(f"{executable}: {exc}")
         self._record_event(codex, "race", f"Started Codex ↔ Claude: {task}")
         self.rebuild_sidebar()
@@ -297,5 +301,4 @@ class AgentToolsMixin:
         dialog.destroy()
         if response in targets:
             self.select_terminal(targets[response])
-
 

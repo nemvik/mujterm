@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import sqlite3
+import stat
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from mujterm.database import Database
+from mujterm.database import (
+    MIGRATIONS,
+    SCHEMA_VERSION,
+    Database,
+    DatabaseError,
+)
 from mujterm.models import AgentRace, SshConnection
 
 
@@ -28,6 +36,110 @@ class DatabaseTests(unittest.TestCase):
         self.database.delete_project(second.id)
         ungrouped = self.database.get_terminal(terminal.id)
         self.assertIsNone(ungrouped.project_id if ungrouped else "missing")
+
+    def test_new_database_uses_current_schema_without_a_backup(self) -> None:
+        self.assertEqual(self.database.schema_version, SCHEMA_VERSION)
+        self.assertEqual(self.database.integrity_status, "ok")
+        self.assertIsNone(self.database.last_backup_path)
+
+    def test_legacy_database_is_backed_up_and_migrated_without_data_loss(self) -> None:
+        path = Path(self.temporary.name) / "legacy.db"
+        legacy = sqlite3.connect(path)
+        legacy.execute(
+            """
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                collapsed INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO projects(id, name, root_path, position, collapsed) "
+            "VALUES ('legacy-project', 'Legacy', '/tmp/legacy', 0, 0)"
+        )
+        legacy.commit()
+        legacy.close()
+
+        migrated = Database(path)
+        try:
+            self.assertEqual(migrated.schema_version, SCHEMA_VERSION)
+            self.assertEqual(migrated.get_project("legacy-project").name, "Legacy")
+            self.assertEqual(migrated.list_toolbox_commands(), [])
+            self.assertIsNone(migrated.get_ssh_connection("legacy-project"))
+            backup = migrated.last_backup_path
+            self.assertIsNotNone(backup)
+            self.assertTrue(backup.exists())
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+        finally:
+            migrated.close()
+
+        backup_database = sqlite3.connect(backup)
+        try:
+            version = backup_database.execute("PRAGMA user_version").fetchone()[0]
+            name = backup_database.execute(
+                "SELECT name FROM projects WHERE id = 'legacy-project'"
+            ).fetchone()[0]
+        finally:
+            backup_database.close()
+        self.assertEqual(version, 0)
+        self.assertEqual(name, "Legacy")
+
+    def test_newer_database_schema_is_rejected_without_modification(self) -> None:
+        path = Path(self.temporary.name) / "future.db"
+        future = sqlite3.connect(path)
+        future.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 5}")
+        future.close()
+
+        with self.assertRaisesRegex(DatabaseError, "newer MujTerm version"):
+            Database(path)
+
+        unchanged = sqlite3.connect(path)
+        try:
+            version = unchanged.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            unchanged.close()
+        self.assertEqual(version, SCHEMA_VERSION + 5)
+        self.assertFalse(list(path.parent.glob("future.db.backup-*")))
+
+    def test_failed_migration_rolls_back_the_complete_transaction(self) -> None:
+        path = Path(self.temporary.name) / "rollback.db"
+        legacy = sqlite3.connect(path)
+        legacy.execute("CREATE TABLE preserved(value TEXT NOT NULL)")
+        legacy.execute("INSERT INTO preserved VALUES ('safe')")
+        legacy.commit()
+        legacy.close()
+        broken_migration = (
+            "CREATE TABLE must_be_rolled_back(value TEXT)",
+            "THIS IS NOT VALID SQL",
+        )
+
+        with patch.dict(MIGRATIONS, {1: broken_migration}, clear=True):
+            with self.assertRaisesRegex(DatabaseError, "Could not migrate"):
+                Database(path)
+
+        unchanged = sqlite3.connect(path)
+        try:
+            version = unchanged.execute("PRAGMA user_version").fetchone()[0]
+            preserved = unchanged.execute("SELECT value FROM preserved").fetchone()[0]
+            transient = unchanged.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'must_be_rolled_back'"
+            ).fetchone()
+        finally:
+            unchanged.close()
+        self.assertEqual(version, 0)
+        self.assertEqual(preserved, "safe")
+        self.assertIsNone(transient)
+
+    def test_corrupt_database_is_rejected(self) -> None:
+        path = Path(self.temporary.name) / "corrupt.db"
+        path.write_bytes(b"not a sqlite database")
+
+        with self.assertRaisesRegex(DatabaseError, "Could not open state database"):
+            Database(path)
 
     def test_terminal_reordering(self) -> None:
         project = self.database.create_project("Project", "/tmp/project")

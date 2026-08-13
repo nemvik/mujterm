@@ -122,6 +122,9 @@ class ShellBridgeTests(unittest.TestCase):
                     "MUJTERM_SHELL_INTEGRATION": "1",
                     "MUJTERM_TEST_EVENTS": str(event_log),
                     "MUJTERM_TEST_PROFILE": str(profile_marker),
+                    "MUJTERM_BASH_INTEGRATED": "1",
+                    "MUJTERM_BASH_ROOT": "/inherited/mujterm/bash",
+                    "MUJTERM_ORIGINAL_HOME": "/inherited/home",
                 }
             )
             result = subprocess.run(

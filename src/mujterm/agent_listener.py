@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import threading
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .paths import ensure_private_dir, runtime_dir
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AgentSocketListener:
@@ -58,6 +61,7 @@ class AgentSocketListener:
                     self.callback(value)
             except socket.timeout:
                 continue
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 if self._stopping.is_set():
                     return
+                LOGGER.warning("Ignored invalid agent event: %s", exc)

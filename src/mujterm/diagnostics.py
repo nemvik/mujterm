@@ -15,6 +15,8 @@ from gi.repository import Gtk, Vte  # noqa: E402
 
 from . import __version__
 from .build_info import BUILD_COMMIT, BUILD_KIND
+from .database import SCHEMA_VERSION, Database
+from .logging_config import current_log_path, last_runtime_error, recent_log_lines
 from .tmux_backend import TMUX_SELECTION_BINDINGS, TmuxBackend
 
 
@@ -95,6 +97,7 @@ def _f10_state() -> str:
 def diagnostic_report(
     backend: TmuxBackend,
     environment: Optional[Mapping[str, str]] = None,
+    database: Optional[Database] = None,
 ) -> str:
     values = environment if environment is not None else os.environ
     gtk_version = ".".join(
@@ -115,7 +118,8 @@ def diagnostic_report(
     )
     session = values.get("XDG_SESSION_TYPE", "unknown")
     display = values.get("WAYLAND_DISPLAY") or values.get("DISPLAY") or "unknown"
-    lines = (
+    runtime_error = last_runtime_error()
+    lines = [
         "MujTerm diagnostics",
         f"Version: {__version__}",
         f"Build: {BUILD_KIND} ({_source_commit()})",
@@ -134,5 +138,25 @@ def diagnostic_report(
         f"Mouse routing: {_mouse_binding_state(backend.config_path)}",
         f"tmux socket: {backend.socket_path}",
         f"tmux config: {backend.config_path}",
-    )
+        f"Log file: {current_log_path()}",
+        "Last runtime error: "
+        + (runtime_error.summary() if runtime_error else "none in this run"),
+    ]
+    if database is not None:
+        lines.extend(
+            (
+                f"Database: {database.path}",
+                f"Database schema: {database.schema_version}/{SCHEMA_VERSION}",
+                f"Database integrity: {database.integrity_status}",
+                "Last migration backup: "
+                + (
+                    str(database.last_backup_path)
+                    if database.last_backup_path
+                    else "none in this run"
+                ),
+            )
+        )
+    recent = recent_log_lines()
+    if recent:
+        lines.extend(("", f"Recent log ({len(recent)} lines):", *recent))
     return "\n".join(lines)

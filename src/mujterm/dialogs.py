@@ -15,6 +15,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .diagnostics import diagnostic_report
 from .integrations import IntegrationError
+from .logging_config import record_runtime_error
 from .metadata import git_info
 from .models import (
     ListeningService,
@@ -253,6 +254,7 @@ class WindowDialogsMixin:
         try:
             Gio.AppInfo.launch_default_for_uri(uri, None)
         except GLib.Error as exc:
+            record_runtime_error("Opening external link failed", exc)
             self._error("Could not open link", str(exc))
 
     def open_service(self, port: int) -> None:
@@ -292,6 +294,7 @@ class WindowDialogsMixin:
         except ProcessLookupError:
             return
         except PermissionError as exc:
+            record_runtime_error("Stopping local service failed", exc)
             self._error("Could not stop service", str(exc))
 
     def show_timeline(self) -> None:
@@ -372,6 +375,7 @@ class WindowDialogsMixin:
             self.backend.create_session(terminal, self._recovery_cwd(terminal))
             self._start_project_connection(terminal)
         except TmuxError as exc:
+            record_runtime_error("Terminal restart failed", exc)
             self.backend.kill_session(terminal.tmux_name)
             self._error("Could not restart terminal", str(exc))
             return
@@ -470,10 +474,11 @@ class WindowDialogsMixin:
                 self.integrations.uninstall()
                 self._show_integration_banner_if_needed()
         except IntegrationError as exc:
+            record_runtime_error("Agent integration update failed", exc)
             self._error("Could not update agent configuration", str(exc))
 
     def show_diagnostics(self) -> None:
-        report = diagnostic_report(self.backend)
+        report = diagnostic_report(self.backend, database=self.database)
         dialog = Gtk.Dialog(
             title="About / Diagnostics", transient_for=self, modal=True
         )

@@ -17,6 +17,11 @@
     <binary>mujterm</binary>
   </provides>
   <releases>
+    <release version="0.1.3" date="2026-08-13">
+      <description>
+        <p>Adds private rotating logs, visible runtime errors, and safe database migrations with backups.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-08-13">
       <description>
         <p>Starts VTE sessions asynchronously and splits the UI into focused modules.</p>
