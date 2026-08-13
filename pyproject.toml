@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mujterm"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A project-oriented Linux terminal with Codex and Claude status tracking"
 requires-python = ">=3.10"
 
@@ -16,6 +16,9 @@ mujterm-shell-hook = "mujterm.shell_bridge:hook_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "mujterm.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

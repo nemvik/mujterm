@@ -12,9 +12,15 @@ from .models import PaneInfo, TerminalSession
 from .paths import config_dir, ensure_private_dir, runtime_dir
 
 
-TMUX_SELECTION_BINDINGS = (
+LEGACY_TMUX_SELECTION_BINDINGS = (
     "bind-key -n MouseDown1Pane select-pane -t=",
     "bind-key -n MouseDrag1Pane copy-mode -M",
+)
+
+
+TMUX_SELECTION_BINDINGS = (
+    "bind-key -n MouseDown1Pane select-pane -t= \\; send-keys -M",
+    'bind-key -n MouseDrag1Pane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -M"',
     "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel",
     "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel",
 )
@@ -64,9 +70,10 @@ class TmuxBackend:
                 lines.append("set -g mouse on")
             else:
                 lines[mouse_option] = "set -g mouse on"
-            for binding in TMUX_SELECTION_BINDINGS:
-                if not any(line.strip() == binding for line in lines):
-                    lines.append(binding)
+            managed_bindings = set(LEGACY_TMUX_SELECTION_BINDINGS)
+            managed_bindings.update(TMUX_SELECTION_BINDINGS)
+            lines = [line for line in lines if line.strip() not in managed_bindings]
+            lines.extend(TMUX_SELECTION_BINDINGS)
             content = "\n".join(lines).rstrip() + "\n"
         self.config_path.write_text(content, encoding="utf-8")
         self.config_path.chmod(0o600)

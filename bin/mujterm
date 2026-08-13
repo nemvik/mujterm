@@ -2,4 +2,5 @@
 set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
+export MUJTERM_LAUNCHER="$project_root/bin/mujterm"
 exec python3 -m mujterm "$@"

@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 export PYTHONPATH="/usr/lib/mujterm${PYTHONPATH:+:$PYTHONPATH}"
+export MUJTERM_LAUNCHER="/usr/bin/mujterm"
 exec python3 -m mujterm "$@"

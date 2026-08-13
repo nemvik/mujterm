@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -22,6 +23,7 @@ from mujterm.ui import (
     MainWindow,
     SemanticCommandBlock,
     TerminalView,
+    URL_PATTERN,
     extract_prompt_command,
     ghost_diff,
     literal_search_regex,
@@ -37,6 +39,10 @@ from mujterm.ui import (
 
 
 class TerminalViewTests(unittest.TestCase):
+    def test_url_pattern_matches_http_and_plain_web_addresses(self) -> None:
+        self.assertIsNotNone(re.fullmatch(URL_PATTERN, "https://example.com/path"))
+        self.assertIsNotNone(re.fullmatch(URL_PATTERN, "www.example.com/path"))
+
     @staticmethod
     def _snapshot(
         status: AgentStatus = AgentStatus.SHELL,
@@ -125,6 +131,51 @@ class TerminalViewTests(unittest.TestCase):
         self.assertFalse(handled)
         view._begin_command_capture.assert_called_once_with()
         view.on_input.assert_called_once_with("terminal-1")
+
+    def test_terminal_attach_is_spawned_asynchronously(self) -> None:
+        terminal = SimpleNamespace(spawn_async=Mock())
+        view = SimpleNamespace(
+            terminal=terminal,
+            backend=SimpleNamespace(
+                attach_command=Mock(return_value=["tmux", "attach-session"])
+            ),
+            session=SimpleNamespace(
+                tmux_name="mujterm-test",
+                last_cwd="/tmp",
+            ),
+            _spawn_cancellable=None,
+            _spawn_finished=Mock(),
+            _show_spawn_error=Mock(),
+        )
+
+        TerminalView._spawn(view)
+
+        arguments = terminal.spawn_async.call_args.args
+        self.assertEqual(arguments[1], "/tmp")
+        self.assertEqual(arguments[2], ["tmux", "attach-session"])
+        self.assertIn("COLORTERM=truecolor", arguments[3])
+        self.assertIsNone(arguments[6])
+        self.assertEqual(arguments[7], -1)
+        self.assertIsNotNone(arguments[8])
+        self.assertIs(arguments[9], view._spawn_finished)
+        self.assertIsNone(arguments[10])
+
+    def test_destroy_cancels_a_pending_terminal_spawn(self) -> None:
+        cancellable = Mock()
+        view = SimpleNamespace(
+            _destroyed=False,
+            _spawn_cancellable=cancellable,
+            _stop_selection_autoscroll=Mock(),
+            _selection_clipboard_timer_id=None,
+            _stop_command_poll=Mock(),
+            _radar_completion_timer_id=None,
+        )
+
+        TerminalView._selection_destroyed(view)
+
+        self.assertTrue(view._destroyed)
+        cancellable.cancel.assert_called_once_with()
+        self.assertIsNone(view._spawn_cancellable)
 
     def test_exact_shell_events_upgrade_block_and_finish_with_exit_code(self) -> None:
         block = SemanticCommandBlock(

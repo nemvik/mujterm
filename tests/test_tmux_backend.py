@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 from mujterm.database import Database
 from mujterm.models import TerminalSession
-from mujterm.tmux_backend import TMUX_SELECTION_BINDINGS, TmuxBackend, TmuxError
+from mujterm.tmux_backend import (
+    LEGACY_TMUX_SELECTION_BINDINGS,
+    TMUX_SELECTION_BINDINGS,
+    TmuxBackend,
+    TmuxError,
+)
 
 
 class TmuxBackendTests(unittest.TestCase):
@@ -224,6 +229,28 @@ class TmuxBackendTests(unittest.TestCase):
             self.assertIn("set -g history-limit 12345", migrated)
             for binding in TMUX_SELECTION_BINDINGS:
                 self.assertEqual(migrated.count(binding), 1)
+
+    def test_existing_config_replaces_mouse_bindings_that_swallow_app_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "tmux.conf"
+            config.write_text(
+                "set -g mouse on\n"
+                + "\n".join(LEGACY_TMUX_SELECTION_BINDINGS)
+                + "\nset -g history-limit 12345\n",
+                encoding="utf-8",
+            )
+
+            TmuxBackend(socket_path=root / "tmux.sock", config_path=config)
+
+            migrated = config.read_text(encoding="utf-8")
+            for binding in LEGACY_TMUX_SELECTION_BINDINGS:
+                self.assertNotIn(binding + "\n", migrated)
+            for binding in TMUX_SELECTION_BINDINGS:
+                self.assertEqual(migrated.count(binding), 1)
+            self.assertIn("send-keys -M", migrated)
+            self.assertIn("#{mouse_any_flag}", migrated)
+            self.assertIn("set -g history-limit 12345", migrated)
 
     def test_create_list_and_kill_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

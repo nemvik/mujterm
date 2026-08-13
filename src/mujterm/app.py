@@ -14,6 +14,14 @@ from .tmux_backend import TmuxBackend, TmuxError
 from .ui import MainWindow
 
 
+def disable_menu_bar_accelerator(settings: Optional[Gtk.Settings] = None) -> None:
+    """Keep F10 available to terminal applications instead of GTK menus."""
+    if settings is None:
+        settings = Gtk.Settings.get_default()
+    if settings is not None:
+        settings.set_property("gtk-menu-bar-accel", None)
+
+
 class MujTermApplication(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(
@@ -26,6 +34,7 @@ class MujTermApplication(Gtk.Application):
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)
+        disable_menu_bar_accelerator()
         action = Gio.SimpleAction.new("quit", None)
         action.connect("activate", lambda *_args: self.quit())
         self.add_action(action)

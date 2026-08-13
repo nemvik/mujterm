@@ -17,6 +17,16 @@
     <binary>mujterm</binary>
   </provides>
   <releases>
+    <release version="0.1.2" date="2026-08-13">
+      <description>
+        <p>Starts VTE sessions asynchronously and splits the UI into focused modules.</p>
+      </description>
+    </release>
+    <release version="0.1.1" date="2026-08-13">
+      <description>
+        <p>Adds terminal input compatibility fixes and build diagnostics.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-23"/>
   </releases>
 </component>

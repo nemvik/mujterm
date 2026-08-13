@@ -131,8 +131,9 @@ the terminal; MujTerm never stores passwords or private keys.
 
 Mouse scrolling is handled by tmux. In a regular shell it enters scrollback mode;
 scroll back to the bottom or press `q` to return immediately. Applications that
-support mouse input, including full-screen agent interfaces, receive the wheel
-events directly.
+support mouse input, including `htop` and full-screen agent interfaces, receive
+clicks, drags, and wheel events directly. Hold Shift while dragging when you want
+to select terminal text instead of interacting with the running application.
 
 New terminals always open as their own full workspace; only the explicit split
 actions divide the current workspace. In keyboard mode use `h/j/k/l` to move
@@ -140,11 +141,24 @@ between panes, `[` and `]` to switch workspaces, `n` for a new full workspace,
 `v` to split right, `s` to split down, `x` to close, `a` for the attention queue,
 and `q` or `Esc` to leave the mode.
 
+## Code layout
+
+The GTK window orchestration and shared styling live in `src/mujterm/ui.py`.
+Terminal rendering and VTE lifecycle are isolated in `terminal_view.py`, sidebar
+widgets in `sidebar.py`, search in `search.py`, dialogs and menus in `dialogs.py`,
+and agent handoff/race tools in `agent_tools.py`. The original public imports from
+`mujterm.ui` remain available for compatibility.
+
 ## Tests and packaging
 
 ```sh
 make check
+make compatibility
 make deb
 ```
 
-The Debian package is written to `dist/mujterm_0.1.0_all.deb`.
+The compatibility smoke test drives a real isolated tmux client and verifies
+that `htop` receives both F10 and its clickable Quit control.
+
+The Debian package is written to `dist/mujterm_0.1.2_all.deb`. To rebuild,
+verify, and reinstall the current source in one step, run `make reinstall`.
