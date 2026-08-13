@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -62,6 +63,17 @@ class ExactBlocksIntegrationTests(unittest.TestCase):
                 window = Gtk.Window(title="MujTerm Exact Blocks Smoke")
                 window.set_default_size(1100, 760)
                 view: TerminalView | None = None
+                capture_count = 0
+                capture_lock = threading.Lock()
+                capture_recent_output = backend.capture_recent_output
+
+                def counted_capture(*args: object, **kwargs: object) -> str:
+                    nonlocal capture_count
+                    with capture_lock:
+                        capture_count += 1
+                    return capture_recent_output(*args, **kwargs)
+
+                backend.capture_recent_output = counted_capture  # type: ignore[method-assign]
 
                 def dispatch(payload: dict[str, object]) -> bool:
                     if view is not None:
@@ -119,6 +131,11 @@ class ExactBlocksIntegrationTests(unittest.TestCase):
                     self.assertIn("tracked.txt", block.git_impact.modified)
                     self.assertIn("new.txt", block.git_impact.created)
                     self.assertTrue(block.impact_ready)
+                    self.assertEqual(
+                        capture_count,
+                        2,
+                        "a hidden exact block should capture only at start and end",
+                    )
                     if os.environ.get("MUJTERM_VISUAL_SMOKE") == "1":
                         view.command_blocks_button.set_active(True)
                         view._expanded_command_blocks.add(block.id)

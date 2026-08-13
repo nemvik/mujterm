@@ -149,6 +149,20 @@ class DatabaseTests(unittest.TestCase):
         terminals = [item for item in self.database.list_terminals(project.id) if item.project_id == project.id]
         self.assertEqual([item.id for item in terminals], [second.id, first.id])
 
+    def test_terminal_cwds_are_updated_as_one_batch(self) -> None:
+        first = self.database.create_terminal(None, "One", "/before-one")
+        second = self.database.create_terminal(None, "Two", "/before-two")
+
+        self.database.update_terminal_cwds(
+            {
+                first.id: "/after-one",
+                second.id: "/after-two",
+            }
+        )
+
+        self.assertEqual(self.database.get_terminal(first.id).last_cwd, "/after-one")
+        self.assertEqual(self.database.get_terminal(second.id).last_cwd, "/after-two")
+
     def test_ssh_project_connection_lifecycle(self) -> None:
         project = self.database.create_ssh_project(
             "Production", "root@example.com", 2222, "/tmp"

@@ -34,6 +34,11 @@ class TerminalRow(Gtk.ListBoxRow):
         super().__init__()
         self.window = window
         self.session = session
+        self._last_active: Optional[bool] = None
+        self._last_metadata: Optional[str] = None
+        self._last_resources: Optional[str] = None
+        self._last_services: Optional[tuple[ListeningService, ...]] = None
+        self._last_status: Optional[tuple[AgentStatus, Optional[str]]] = None
         self.get_style_context().add_class("mujterm-terminal-row")
         layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         click_target = Gtk.EventBox()
@@ -85,26 +90,39 @@ class TerminalRow(Gtk.ListBoxRow):
         self.update(None, False)
 
     def update(self, snapshot: Optional[TerminalSnapshot], active: bool) -> None:
-        context = self.get_style_context()
-        if active:
-            context.add_class("active")
-        else:
-            context.remove_class("active")
+        if active != self._last_active:
+            self._last_active = active
+            context = self.get_style_context()
+            if active:
+                context.add_class("active")
+            else:
+                context.remove_class("active")
         if not snapshot:
-            self.metadata.set_text(display_path(self.session.last_cwd))
+            metadata = display_path(self.session.last_cwd)
+            if metadata != self._last_metadata:
+                self._last_metadata = metadata
+                self.metadata.set_text(metadata)
             self._update_services(())
             self._set_status(AgentStatus.SHELL, None)
             return
         metadata = display_path(snapshot.cwd)
         if snapshot.branch:
             metadata += f"  ·  {snapshot.branch}"
-        self.metadata.set_text(metadata)
-        self.metadata.set_tooltip_text(metadata)
-        self.resources.set_text(resource_text(snapshot.cpu_percent, snapshot.memory_bytes))
+        if metadata != self._last_metadata:
+            self._last_metadata = metadata
+            self.metadata.set_text(metadata)
+            self.metadata.set_tooltip_text(metadata)
+        resources = resource_text(snapshot.cpu_percent, snapshot.memory_bytes)
+        if resources != self._last_resources:
+            self._last_resources = resources
+            self.resources.set_text(resources)
         self._update_services(snapshot.services)
         self._set_status(snapshot.status, snapshot.agent.value.title() if snapshot.agent else None)
 
     def _update_services(self, services: tuple[ListeningService, ...]) -> None:
+        if services == self._last_services:
+            return
+        self._last_services = services
         for child in self.ports_box.get_children():
             self.ports_box.remove(child)
         for service in services[:4]:
@@ -123,6 +141,10 @@ class TerminalRow(Gtk.ListBoxRow):
         self.ports_box.show_all()
 
     def _set_status(self, status: AgentStatus, agent: Optional[str]) -> None:
+        state = (status, agent)
+        if state == self._last_status:
+            return
+        self._last_status = state
         context = self.status_box.get_style_context()
         for class_name in ("status-working", "status-action", "status-ready", "status-error", "status-shell"):
             context.remove_class(class_name)
@@ -191,6 +213,7 @@ class ProjectSection(Gtk.Box):
         self.window = window
         self.project = project
         self.project_id = project.id if project else None
+        self._summary_text: Optional[str] = None
         self.header = Gtk.EventBox()
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         header_box.get_style_context().add_class("mujterm-project-header")
@@ -282,11 +305,14 @@ class ProjectSection(Gtk.Box):
             ) == AgentStatus.WORKING
         )
         if needs_action:
-            self.alert.set_text(f"! {needs_action}")
+            summary = f"! {needs_action}"
         elif working:
-            self.alert.set_text(f"◉ {working}")
+            summary = f"◉ {working}"
         else:
-            self.alert.set_text("")
+            summary = ""
+        if summary != self._summary_text:
+            self._summary_text = summary
+            self.alert.set_text(summary)
 
     def _header_click(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         if event.button == 3 and self.project:
@@ -317,6 +343,5 @@ class ProjectSection(Gtk.Box):
             self.window.move_project(payload.split(":", 1)[1], self.project.id)
             success = True
         Gtk.drag_finish(context, success, success, time_value)
-
 
 

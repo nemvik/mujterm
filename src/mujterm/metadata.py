@@ -33,27 +33,46 @@ class _ProcessRecord:
 class ProcessUsageSampler:
     """Samples resource usage and agents from one process-table scan."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        network_interval: float = 3.0,
+        signature_interval: float = 3.0,
+    ) -> None:
         self._previous_ticks: dict[int, int] = {}
         self._previous_time: Optional[float] = None
         self._clock_ticks = int(os.sysconf("SC_CLK_TCK"))
         self._page_size = int(os.sysconf("SC_PAGE_SIZE"))
         self.agents: dict[int, Optional[AgentKind]] = {}
+        self.network_interval = network_interval
+        self.signature_interval = signature_interval
+        self._last_network_sample = 0.0
+        self._last_signature_sample = 0.0
+        self._network_cache: dict[
+            int, tuple[tuple[ListeningService, ...], tuple[int, ...]]
+        ] = {}
 
     def sample(
         self, root_pids: Iterable[int]
     ) -> dict[int, tuple[float, int, tuple[ListeningService, ...], tuple[int, ...]]]:
         roots = list(root_pids)
-        processes = self._read_processes()
+        processes = self._read_processes(roots)
         children: dict[int, list[int]] = defaultdict(list)
         for pid, process in processes.items():
             children[process.ppid].append(pid)
 
         now = time.monotonic()
         elapsed = now - self._previous_time if self._previous_time is not None else 0.0
-        listening_sockets, connected_sockets = self._socket_tables()
+        refresh_network = (
+            not self._network_cache
+            or now - self._last_network_sample >= self.network_interval
+        )
+        if refresh_network:
+            listening_sockets, connected_sockets = self._socket_tables()
         output: dict[int, tuple[float, int, tuple[ListeningService, ...], tuple[int, ...]]] = {}
         relevant: set[int] = set()
+        network_cache: dict[
+            int, tuple[tuple[ListeningService, ...], tuple[int, ...]]
+        ] = {}
         for root in roots:
             tree = self._process_tree(root, children)
             relevant.update(tree)
@@ -74,13 +93,33 @@ class ProcessUsageSampler:
                 if elapsed > 0
                 else 0.0
             )
-            services, connected_ports = self._network_for_tree(
-                tree, listening_sockets, connected_sockets
-            )
+            if refresh_network:
+                services, connected_ports = self._network_for_tree(
+                    tree, listening_sockets, connected_sockets
+                )
+                network_cache[root] = (services, connected_ports)
+            else:
+                services, connected_ports = self._network_cache.get(
+                    root, ((), ())
+                )
             output[root] = (cpu_percent, memory_bytes, services, connected_ports)
 
-        signatures = self._read_signatures(relevant)
-        self.agents = _agents_for_roots(roots, children, signatures)
+        if refresh_network:
+            self._network_cache = network_cache
+            self._last_network_sample = now
+        refresh_signatures = (
+            not self.agents
+            or now - self._last_signature_sample >= self.signature_interval
+        )
+        if refresh_signatures:
+            signatures = self._read_signatures(relevant)
+            self.agents = _agents_for_roots(roots, children, signatures)
+            self._last_signature_sample = now
+        else:
+            self.agents = {
+                root: self.agents.get(root)
+                for root in roots
+            }
         self._previous_ticks = {
             pid: processes[pid].ticks
             for pid in relevant
@@ -89,11 +128,20 @@ class ProcessUsageSampler:
         self._previous_time = now
         return output
 
-    def _read_processes(self) -> dict[int, _ProcessRecord]:
+    def _read_processes(
+        self, root_pids: Optional[Iterable[int]] = None
+    ) -> dict[int, _ProcessRecord]:
         processes: dict[int, _ProcessRecord] = {}
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdigit():
-                continue
+        entries = (
+            self._process_tree_entries(root_pids)
+            if root_pids is not None
+            else (
+                entry
+                for entry in Path("/proc").iterdir()
+                if entry.name.isdigit()
+            )
+        )
+        for entry in entries:
             try:
                 stat = (entry / "stat").read_text(encoding="utf-8")
                 close = stat.rfind(")")
@@ -106,6 +154,35 @@ class ProcessUsageSampler:
                 continue
             processes[pid] = _ProcessRecord(ppid, ticks, rss_bytes)
         return processes
+
+    @staticmethod
+    def _process_tree_entries(root_pids: Iterable[int]) -> Iterable[Path]:
+        """Yield a complete Linux process subtree without scanning all of /proc."""
+        pending = deque(root_pids)
+        visited: set[int] = set()
+        while pending:
+            pid = pending.popleft()
+            if pid in visited:
+                continue
+            visited.add(pid)
+            process = Path("/proc") / str(pid)
+            yield process
+            try:
+                tasks = process.joinpath("task").iterdir()
+                for task in tasks:
+                    try:
+                        children = task.joinpath("children").read_text(
+                            encoding="utf-8"
+                        )
+                    except OSError:
+                        continue
+                    for child in children.split():
+                        try:
+                            pending.append(int(child))
+                        except ValueError:
+                            continue
+            except OSError:
+                continue
 
     @staticmethod
     def _read_signatures(pids: Iterable[int]) -> dict[int, str]:

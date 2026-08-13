@@ -517,10 +517,13 @@ class MainWindow(
         self.snapshots: dict[str, TerminalSnapshot] = {}
         self._snapshot_future: Optional[concurrent.futures.Future[dict[str, TerminalSnapshot]]] = None
         self._usage_sampler = ProcessUsageSampler()
-        self._git_cache = GitInfoCache()
+        self._git_cache = GitInfoCache(ttl=8.0)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="metadata")
         self._search_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="output-search"
+        )
+        self._capture_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="command-capture"
         )
         self._snapshot_timer_id: Optional[int] = None
         self._closing = False
@@ -528,6 +531,8 @@ class MainWindow(
         self._last_runtime_warning_at = 0.0
         self._status_overrides: dict[str, AgentStatus] = {}
         self._attention_ids: list[str] = []
+        self._attention_signature: Optional[tuple[str, ...]] = None
+        self._sidebar_stats: Optional[tuple[int, int]] = None
         self.get_style_context().add_class("mujterm-window")
         self.set_default_size(1180, 760)
         self.set_size_request(760, 480)
@@ -549,8 +554,11 @@ class MainWindow(
         if self._snapshot_timer_id is not None:
             GLib.source_remove(self._snapshot_timer_id)
             self._snapshot_timer_id = None
+        for view in self.terminal_views.values():
+            view._stop_command_poll()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._search_executor.shutdown(wait=False, cancel_futures=True)
+        self._capture_executor.shutdown(wait=False, cancel_futures=True)
 
     def _build_header(self) -> None:
         header = Gtk.HeaderBar(show_close_button=True)
@@ -939,6 +947,8 @@ class MainWindow(
             self.sidebar.remove(child)
         self.terminal_rows.clear()
         self.project_sections.clear()
+        self._attention_signature = None
+        self._sidebar_stats = None
         for project in self.database.list_projects():
             terminals = [
                 terminal
@@ -1121,6 +1131,7 @@ class MainWindow(
                 self.open_uri,
                 self.show_project_search,
                 self.report_runtime_error,
+                self._capture_executor,
             )
             self.terminal_views[terminal.id] = view
         return view
@@ -1441,7 +1452,9 @@ class MainWindow(
             self._start_snapshot_refresh()
             return False
         if isinstance(terminal_id, str):
-            self._status_overrides.pop(terminal_id, None)
+            override = self._status_overrides.pop(terminal_id, None)
+            if override is not None:
+                self._apply_snapshots(changed_ids={terminal_id})
         self._start_snapshot_refresh()
         return False
 
@@ -1449,21 +1462,7 @@ class MainWindow(
         snapshot = self.snapshots.get(terminal_id)
         if snapshot and snapshot.status == AgentStatus.NEEDS_ACTION:
             self._status_overrides[terminal_id] = AgentStatus.WORKING
-            self.snapshots[terminal_id] = TerminalSnapshot(
-                terminal_id=snapshot.terminal_id,
-                cwd=snapshot.cwd,
-                command=snapshot.command,
-                branch=snapshot.branch,
-                git_root=snapshot.git_root,
-                agent=snapshot.agent,
-                status=AgentStatus.WORKING,
-                cpu_percent=snapshot.cpu_percent,
-                memory_bytes=snapshot.memory_bytes,
-                services=snapshot.services,
-                connected_ports=snapshot.connected_ports,
-                dead=snapshot.dead,
-            )
-            self._apply_snapshots()
+            self._apply_snapshots(changed_ids={terminal_id})
 
     def _terminal_child_exit(self, terminal_id: str) -> None:
         if self._closing:
@@ -1484,7 +1483,7 @@ class MainWindow(
                 connected_ports=snapshot.connected_ports,
                 dead=True,
             )
-            self._apply_snapshots()
+            self._apply_snapshots(changed_ids={terminal_id})
 
     def _start_snapshot_refresh(self) -> bool:
         if self._closing:
@@ -1523,43 +1522,78 @@ class MainWindow(
         except Exception as exc:
             self.report_runtime_error("Background monitoring failed", exc)
             return False
-        self._record_snapshot_events(self.snapshots, snapshots)
+        previous = self.snapshots
+        terminals = {
+            terminal.id: terminal for terminal in self.database.list_terminals()
+        }
+        self._record_snapshot_events(previous, snapshots, terminals)
         self.snapshots = snapshots
-        for terminal_id, snapshot in snapshots.items():
-            terminal = self.database.get_terminal(terminal_id)
-            if terminal and snapshot.cwd and snapshot.cwd != terminal.last_cwd:
-                self.database.update_terminal_cwd(terminal_id, snapshot.cwd)
-        self._apply_snapshots()
+        cwd_updates = {
+            terminal_id: snapshot.cwd
+            for terminal_id, snapshot in snapshots.items()
+            if terminal_id in terminals
+            and snapshot.cwd
+            and snapshot.cwd != terminals[terminal_id].last_cwd
+        }
+        self.database.update_terminal_cwds(cwd_updates)
+        self._apply_snapshots(
+            changed_ids={
+                terminal_id
+                for terminal_id in set(previous) | set(snapshots)
+                if previous.get(terminal_id) != snapshots.get(terminal_id)
+            },
+            terminals=terminals,
+        )
         return False
 
-    def _apply_snapshots(self) -> None:
-        for terminal_id, row in self.terminal_rows.items():
-            snapshot = self.snapshots.get(terminal_id)
-            override = self._status_overrides.get(terminal_id)
-            if snapshot and override:
-                snapshot = TerminalSnapshot(
-                    terminal_id=snapshot.terminal_id,
-                    cwd=snapshot.cwd,
-                    command=snapshot.command,
-                    branch=snapshot.branch,
-                    git_root=snapshot.git_root,
-                    agent=snapshot.agent,
-                    status=override,
-                    cpu_percent=snapshot.cpu_percent,
-                    memory_bytes=snapshot.memory_bytes,
-                    services=snapshot.services,
-                    connected_ports=snapshot.connected_ports,
-                    dead=snapshot.dead,
-                )
-            row.update(snapshot, terminal_id == self.active_terminal_id)
+    def _effective_snapshot(
+        self, terminal_id: str
+    ) -> Optional[TerminalSnapshot]:
+        snapshot = self.snapshots.get(terminal_id)
+        override = self._status_overrides.get(terminal_id)
+        if snapshot and override and snapshot.status != override:
+            return TerminalSnapshot(
+                terminal_id=snapshot.terminal_id,
+                cwd=snapshot.cwd,
+                command=snapshot.command,
+                branch=snapshot.branch,
+                git_root=snapshot.git_root,
+                agent=snapshot.agent,
+                status=override,
+                cpu_percent=snapshot.cpu_percent,
+                memory_bytes=snapshot.memory_bytes,
+                services=snapshot.services,
+                connected_ports=snapshot.connected_ports,
+                dead=snapshot.dead,
+            )
+        return snapshot
+
+    def _apply_snapshots(
+        self,
+        changed_ids: Optional[set[str]] = None,
+        terminals: Optional[dict[str, TerminalSession]] = None,
+    ) -> None:
+        if terminals is None:
+            terminals = {
+                terminal.id: terminal for terminal in self.database.list_terminals()
+            }
+        target_ids = set(self.terminal_rows) | set(self.terminal_views)
+        if changed_ids is not None:
+            target_ids &= changed_ids
+        for terminal_id in target_ids:
+            snapshot = self._effective_snapshot(terminal_id)
+            row = self.terminal_rows.get(terminal_id)
+            if row:
+                row.update(snapshot, terminal_id == self.active_terminal_id)
             view = self.terminal_views.get(terminal_id)
-            terminal = self.database.get_terminal(terminal_id)
+            terminal = terminals.get(terminal_id)
             if view:
                 view.update_snapshot(snapshot, terminal.name if terminal else None)
-        for section in self.project_sections:
-            section.update_summary(self.snapshots)
-        self._update_sidebar_stats()
-        self._update_attention_queue()
+        if changed_ids is None or changed_ids:
+            for section in self.project_sections:
+                section.update_summary(self.snapshots)
+            self._update_sidebar_stats(len(terminals))
+            self._update_attention_queue(terminals)
 
     def _record_event(self, terminal: TerminalSession, kind: str, summary: str) -> None:
         self.database.append_timeline_event(
@@ -1575,6 +1609,7 @@ class MainWindow(
         self,
         previous: dict[str, TerminalSnapshot],
         current: dict[str, TerminalSnapshot],
+        terminals: Optional[dict[str, TerminalSession]] = None,
     ) -> None:
         status_messages = {
             AgentStatus.WORKING: "Agent started working",
@@ -1583,9 +1618,13 @@ class MainWindow(
             AgentStatus.ERROR: "Agent stopped with an error",
             AgentStatus.ENDED: "Terminal process ended",
         }
+        if terminals is None:
+            terminals = {
+                terminal.id: terminal for terminal in self.database.list_terminals()
+            }
         for terminal_id, snapshot in current.items():
             before = previous.get(terminal_id)
-            terminal = self.database.get_terminal(terminal_id)
+            terminal = terminals.get(terminal_id)
             if not before or not terminal:
                 continue
             if snapshot.branch and snapshot.branch != before.branch:
@@ -1609,9 +1648,15 @@ class MainWindow(
             for port in sorted(old_ports - new_ports):
                 self._record_event(terminal, "service", f"Stopped listening on localhost:{port}")
 
-    def _update_attention_queue(self) -> None:
-        terminals = {terminal.id: terminal for terminal in self.database.list_terminals()}
-        self._attention_ids = [
+    def _update_attention_queue(
+        self,
+        terminals: Optional[dict[str, TerminalSession]] = None,
+    ) -> None:
+        if terminals is None:
+            terminals = {
+                terminal.id: terminal for terminal in self.database.list_terminals()
+            }
+        attention_ids = [
             terminal_id
             for terminal_id in terminals
             if self.snapshots.get(terminal_id)
@@ -1619,6 +1664,12 @@ class MainWindow(
                 terminal_id, self.snapshots[terminal_id].status
             ) == AgentStatus.NEEDS_ACTION
         ]
+        signature = tuple(attention_ids)
+        if signature == self._attention_signature:
+            self._attention_ids = attention_ids
+            return
+        self._attention_signature = signature
+        self._attention_ids = attention_ids
         for child in self.attention_items.get_children():
             self.attention_items.remove(child)
         self.attention_title.set_text(f"! ATTENTION  {len(self._attention_ids)}")
@@ -1662,9 +1713,14 @@ class MainWindow(
             index = -1
         self.select_terminal(self._attention_ids[(index + 1) % len(self._attention_ids)])
 
-    def _update_sidebar_stats(self) -> None:
-        sessions = len(self.database.list_terminals())
+    def _update_sidebar_stats(self, sessions: Optional[int] = None) -> None:
+        if sessions is None:
+            sessions = len(self.database.list_terminals())
         agents = sum(1 for snapshot in self.snapshots.values() if snapshot.agent)
+        stats = (sessions, agents)
+        if stats == self._sidebar_stats:
+            return
+        self._sidebar_stats = stats
         self.session_count_label.set_text(f"{sessions:02d} SESSIONS")
         self.agent_count_label.set_text(f"{agents:02d} AGENTS")
 

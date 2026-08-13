@@ -434,6 +434,16 @@ class Database:
         )
         self.connection.commit()
 
+    def update_terminal_cwds(self, updates: dict[str, str]) -> None:
+        """Persist changed terminal directories in a single transaction."""
+        if not updates:
+            return
+        with self.connection:
+            self.connection.executemany(
+                "UPDATE terminals SET last_cwd = ? WHERE id = ?",
+                ((cwd, terminal_id) for terminal_id, cwd in updates.items()),
+            )
+
     def move_terminal(
         self,
         terminal_id: str,

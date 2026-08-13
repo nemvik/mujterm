@@ -4,6 +4,7 @@ import concurrent.futures
 import re
 import unittest
 from types import SimpleNamespace
+from types import MethodType
 from unittest.mock import Mock, patch
 
 import gi
@@ -58,6 +59,114 @@ class TerminalViewTests(unittest.TestCase):
         window.report_runtime_error.assert_called_once_with(
             "Background monitoring failed", failure
         )
+
+    def test_snapshot_refresh_batches_cwd_writes_and_passes_only_changes(self) -> None:
+        terminal = TerminalSession(
+            id="terminal-1",
+            project_id=None,
+            name="Terminal 1",
+            tmux_name="mujterm-terminal-1",
+            initial_cwd="/before",
+            last_cwd="/before",
+            position=0,
+        )
+        before = TerminalSnapshot(
+            terminal_id=terminal.id,
+            cwd="/before",
+            command="bash",
+            branch=None,
+            git_root=None,
+            agent=None,
+            status=AgentStatus.SHELL,
+        )
+        after = TerminalSnapshot(
+            terminal_id=terminal.id,
+            cwd="/after",
+            command="bash",
+            branch=None,
+            git_root=None,
+            agent=None,
+            status=AgentStatus.SHELL,
+        )
+        future: concurrent.futures.Future[dict[str, TerminalSnapshot]] = (
+            concurrent.futures.Future()
+        )
+        future.set_result({terminal.id: after})
+        database = SimpleNamespace(
+            list_terminals=Mock(return_value=[terminal]),
+            update_terminal_cwds=Mock(),
+        )
+        window = SimpleNamespace(
+            _closing=False,
+            snapshots={terminal.id: before},
+            database=database,
+            _record_snapshot_events=Mock(),
+            _apply_snapshots=Mock(),
+            report_runtime_error=Mock(),
+        )
+
+        self.assertFalse(MainWindow._snapshot_done(window, future))
+
+        database.list_terminals.assert_called_once_with()
+        database.update_terminal_cwds.assert_called_once_with(
+            {terminal.id: "/after"}
+        )
+        window._apply_snapshots.assert_called_once_with(
+            changed_ids={terminal.id},
+            terminals={terminal.id: terminal},
+        )
+
+    def test_snapshot_application_updates_only_changed_terminal_widgets(self) -> None:
+        terminal_one = TerminalSession(
+            id="terminal-1",
+            project_id=None,
+            name="One",
+            tmux_name="mujterm-one",
+            initial_cwd="/tmp",
+            last_cwd="/tmp",
+            position=0,
+        )
+        terminal_two = TerminalSession(
+            id="terminal-2",
+            project_id=None,
+            name="Two",
+            tmux_name="mujterm-two",
+            initial_cwd="/tmp",
+            last_cwd="/tmp",
+            position=1,
+        )
+        snapshot = self._snapshot(cpu_percent=12.0)
+        row_one, row_two = Mock(), Mock()
+        view_one, view_two = Mock(), Mock()
+        section = SimpleNamespace(update_summary=Mock())
+        window = SimpleNamespace(
+            snapshots={terminal_one.id: snapshot},
+            _status_overrides={},
+            terminal_rows={terminal_one.id: row_one, terminal_two.id: row_two},
+            terminal_views={terminal_one.id: view_one, terminal_two.id: view_two},
+            active_terminal_id=terminal_one.id,
+            project_sections=[section],
+            _update_sidebar_stats=Mock(),
+            _update_attention_queue=Mock(),
+        )
+        window._effective_snapshot = MethodType(
+            MainWindow._effective_snapshot, window
+        )
+        terminals = {
+            terminal_one.id: terminal_one,
+            terminal_two.id: terminal_two,
+        }
+
+        MainWindow._apply_snapshots(
+            window,
+            changed_ids={terminal_one.id},
+            terminals=terminals,
+        )
+
+        row_one.update.assert_called_once_with(snapshot, True)
+        view_one.update_snapshot.assert_called_once_with(snapshot, "One")
+        row_two.update.assert_not_called()
+        view_two.update_snapshot.assert_not_called()
 
     def test_runtime_error_is_logged_and_shown_without_duplicate_log_spam(self) -> None:
         window = SimpleNamespace(
@@ -232,6 +341,8 @@ class TerminalViewTests(unittest.TestCase):
             _armed_command_context=None,
             _render_command_blocks=Mock(),
             _finish_command_capture=Mock(),
+            _should_poll_command=Mock(return_value=False),
+            _stop_command_poll=Mock(),
         )
 
         TerminalView._exact_command_started(
@@ -241,11 +352,87 @@ class TerminalViewTests(unittest.TestCase):
         self.assertEqual(block.command, "printf '%s' exact")
         self.assertEqual(block.shell, "bash")
         self.assertEqual(block.cwd, "/tmp/project")
+        view._stop_command_poll.assert_called_once_with()
 
         TerminalView._exact_command_ended(view, 7, "/tmp/after")
         self.assertEqual(block.exit_code, 7)
         self.assertEqual(block.end_cwd, "/tmp/after")
         view._finish_command_capture.assert_called_once_with()
+
+    def test_hidden_exact_command_does_not_start_live_output_polling(self) -> None:
+        context = SimpleNamespace(
+            baseline_output="prompt$ long-task",
+            started_at=1.0,
+            cwd="/tmp",
+            git_before=None,
+            ports_before=(),
+            branch_before=None,
+            cpu_before=0.0,
+            memory_before=0,
+        )
+        view = SimpleNamespace(
+            _next_command_block_id=1,
+            command_blocks=[],
+            _expanded_command_blocks=set(),
+            _pending_command_block=None,
+            _command_capture_last="",
+            _command_capture_changed_at=0.0,
+            _should_poll_command=Mock(return_value=False),
+            _start_command_poll=Mock(),
+            _render_command_blocks=Mock(),
+            _apply_quiet_radar=Mock(),
+        )
+
+        block = TerminalView._create_command_block(
+            view,
+            "long-task",
+            context,
+            exact=True,
+            shell="bash",
+        )
+
+        self.assertTrue(block.exact)
+        view._start_command_poll.assert_not_called()
+
+    def test_command_completion_capture_is_submitted_off_the_ui_thread(self) -> None:
+        block = SemanticCommandBlock(
+            id=1,
+            command="make",
+            baseline_output="prompt$ make",
+            started_at=1.0,
+            exact=True,
+        )
+        pending: concurrent.futures.Future[tuple[str, object]] = (
+            concurrent.futures.Future()
+        )
+        executor = SimpleNamespace(submit=Mock(return_value=pending))
+        backend = SimpleNamespace(capture_recent_output=Mock())
+        view = SimpleNamespace(
+            _pending_command_block=block,
+            _armed_command_context=object(),
+            _last_snapshot=None,
+            _stop_command_poll=Mock(),
+            _capture_executor=executor,
+            _collect_command_completion=Mock(),
+            _command_finish_futures=set(),
+            _command_finish_done=Mock(),
+            _apply_quiet_radar=Mock(),
+            _report_capture_error=Mock(),
+            _complete_command_capture=Mock(),
+            session=SimpleNamespace(tmux_name="mujterm-test"),
+            backend=backend,
+        )
+
+        TerminalView._finish_command_capture(view)
+
+        executor.submit.assert_called_once_with(
+            view._collect_command_completion,
+            None,
+            "",
+        )
+        backend.capture_recent_output.assert_not_called()
+        self.assertIsNone(view._pending_command_block)
+        self.assertIn(pending, view._command_finish_futures)
 
     def test_impact_lens_markup_reports_files_ports_and_resources(self) -> None:
         block = SemanticCommandBlock(

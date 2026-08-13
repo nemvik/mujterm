@@ -178,5 +178,5 @@ make deb
 The compatibility smoke test drives a real isolated tmux client and verifies
 that `htop` receives both F10 and its clickable Quit control.
 
-The Debian package is written to `dist/mujterm_0.1.3_all.deb`. To rebuild,
+The Debian package is written to `dist/mujterm_0.1.4_all.deb`. To rebuild,
 verify, and reinstall the current source in one step, run `make reinstall`.

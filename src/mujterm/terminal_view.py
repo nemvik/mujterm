@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import difflib
 import os
 import re
@@ -161,6 +162,17 @@ class SemanticCommandBlock:
         return (self.finished_at or time.monotonic()) - self.started_at
 
 
+@dataclass
+class _CommandBlockWidgets:
+    command: Gtk.Label
+    meta: Gtk.Label
+    badge: Gtk.Label
+    detail: Gtk.Label
+    details: Gtk.Revealer
+    badge_class: str = ""
+    markup: str = ""
+
+
 def shell_like_command(command: str) -> bool:
     return Path(command).name.lower() in SHELL_LIKE_COMMANDS
 
@@ -272,6 +284,7 @@ class TerminalView(Gtk.Box):
         on_open_uri: Callable[[str], None],
         on_project_search: Callable[[str, bool], None],
         on_runtime_error: Optional[Callable[[str, BaseException | str], None]] = None,
+        capture_executor: Optional[concurrent.futures.Executor] = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.get_style_context().add_class("terminal-view")
@@ -296,9 +309,27 @@ class TerminalView(Gtk.Box):
         self._command_capture_last = ""
         self._command_capture_changed_at = 0.0
         self._command_poll_timer_id: Optional[int] = None
+        self._command_poll_generation = 0
+        self._command_capture_future: Optional[
+            concurrent.futures.Future[str]
+        ] = None
+        self._command_finish_futures: set[
+            concurrent.futures.Future[
+                tuple[str, Optional[GitImpactSnapshot]]
+            ]
+        ] = set()
+        self._owns_capture_executor = capture_executor is None
+        self._capture_executor = capture_executor or concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="command-capture",
+        )
         self._expanded_command_blocks: set[int] = set()
+        self._command_block_widgets: dict[int, _CommandBlockWidgets] = {}
+        self._rendered_command_block_ids: Optional[tuple[int, ...]] = None
         self._last_snapshot: Optional[TerminalSnapshot] = None
-        self._radar_state = "idle"
+        self._radar_state = ""
+        self._radar_tooltip = ""
+        self._hud_agent_state: Optional[tuple[AgentStatus, Optional[str]]] = None
         self._radar_completion_active = False
         self._radar_completion_error = False
         self._radar_completion_timer_id: Optional[int] = None
@@ -487,12 +518,23 @@ class TerminalView(Gtk.Box):
         self._render_command_blocks()
 
     def _toggle_command_blocks(self, button: Gtk.ToggleButton) -> None:
-        self.command_blocks_revealer.set_reveal_child(button.get_active())
-        if button.get_active():
+        visible = button.get_active()
+        self.command_blocks_revealer.set_reveal_child(visible)
+        if visible:
             self._render_command_blocks()
+            block = self._pending_command_block
+            if block is not None and block.exact:
+                self._start_command_poll()
+        else:
+            block = self._pending_command_block
+            if block is not None and block.exact:
+                self._stop_command_poll()
 
     def _clear_command_blocks(self, *_args: Any) -> None:
         self._stop_command_poll()
+        for future in tuple(self._command_finish_futures):
+            future.cancel()
+        self._command_finish_futures.clear()
         self._pending_command_block = None
         self._armed_command_context = None
         self.command_blocks.clear()
@@ -508,9 +550,24 @@ class TerminalView(Gtk.Box):
         self._render_command_blocks()
 
     def _render_command_blocks(self) -> None:
-        self.command_blocks_button.set_label(f"BLOCKS {len(self.command_blocks)}")
+        count_label = f"BLOCKS {len(self.command_blocks)}"
+        if self.command_blocks_button.get_label() != count_label:
+            self.command_blocks_button.set_label(count_label)
+        if not self.command_blocks_button.get_active():
+            return
+
+        block_ids = tuple(block.id for block in reversed(self.command_blocks))
+        if block_ids != self._rendered_command_block_ids:
+            self._rebuild_command_block_rows(block_ids)
+
+        for block in reversed(self.command_blocks):
+            self._update_command_block_row(block)
+
+    def _rebuild_command_block_rows(self, block_ids: tuple[int, ...]) -> None:
         for child in self.command_blocks_list.get_children():
             self.command_blocks_list.remove(child)
+        self._command_block_widgets.clear()
+        self._rendered_command_block_ids = block_ids
         if not self.command_blocks:
             empty = Gtk.Label(
                 label="Run a shell command to create the first semantic block.",
@@ -533,23 +590,12 @@ class TerminalView(Gtk.Box):
                 "clicked", lambda _button, block_id=block.id: self._toggle_command_block(block_id)
             )
             summary = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            glyph = "●" if block.running else ("×" if block.exit_code else "✓")
-            command = Gtk.Label(label=f"{glyph}  {block.command}", xalign=0)
+            command = Gtk.Label(xalign=0)
             command.set_ellipsize(Pango.EllipsizeMode.END)
             command.get_style_context().add_class("command-block-command")
-            meta = Gtk.Label(label=self._command_block_meta(block))
+            meta = Gtk.Label()
             meta.get_style_context().add_class("command-block-meta")
-            diff = Gtk.Label(label=self._command_block_badge(block))
-            badge_class = "command-block-diff"
-            if block.exit_code not in (None, 0):
-                badge_class = "command-block-error"
-            elif (
-                block.previous_output is not None
-                and not block.added_lines
-                and not block.removed_lines
-            ):
-                badge_class = "command-block-same"
-            diff.get_style_context().add_class(badge_class)
+            diff = Gtk.Label()
             summary.pack_start(command, True, True, 0)
             summary.pack_end(diff, False, False, 0)
             summary.pack_end(meta, False, False, 0)
@@ -564,13 +610,59 @@ class TerminalView(Gtk.Box):
             detail.set_line_wrap(True)
             detail.set_line_wrap_mode(Pango.WrapMode.CHAR)
             detail.set_max_width_chars(160)
-            detail.set_markup(self._command_block_markup(block))
             detail.get_style_context().add_class("command-block-output")
             details.add(detail)
-            details.set_reveal_child(block.id in self._expanded_command_blocks)
             row.pack_start(details, False, False, 0)
             self.command_blocks_list.add(row)
+            self._command_block_widgets[block.id] = _CommandBlockWidgets(
+                command=command,
+                meta=meta,
+                badge=diff,
+                detail=detail,
+                details=details,
+            )
         self.command_blocks_list.show_all()
+
+    def _update_command_block_row(self, block: SemanticCommandBlock) -> None:
+        widgets = self._command_block_widgets.get(block.id)
+        if widgets is None:
+            return
+        glyph = "●" if block.running else ("×" if block.exit_code else "✓")
+        command = f"{glyph}  {block.command}"
+        if widgets.command.get_text() != command:
+            widgets.command.set_text(command)
+        meta = self._command_block_meta(block)
+        if widgets.meta.get_text() != meta:
+            widgets.meta.set_text(meta)
+        badge = self._command_block_badge(block)
+        if widgets.badge.get_text() != badge:
+            widgets.badge.set_text(badge)
+        badge_class = "command-block-diff"
+        if block.exit_code not in (None, 0):
+            badge_class = "command-block-error"
+        elif (
+            block.previous_output is not None
+            and not block.added_lines
+            and not block.removed_lines
+        ):
+            badge_class = "command-block-same"
+        if widgets.badge_class != badge_class:
+            context = widgets.badge.get_style_context()
+            for candidate in (
+                "command-block-diff",
+                "command-block-error",
+                "command-block-same",
+            ):
+                context.remove_class(candidate)
+            context.add_class(badge_class)
+            widgets.badge_class = badge_class
+        markup = self._command_block_markup(block)
+        if widgets.markup != markup:
+            widgets.detail.set_markup(markup)
+            widgets.markup = markup
+        widgets.details.set_reveal_child(
+            block.id in self._expanded_command_blocks
+        )
 
     @staticmethod
     def _command_block_meta(block: SemanticCommandBlock) -> str:
@@ -807,7 +899,8 @@ class TerminalView(Gtk.Box):
         self._pending_command_block = block
         self._command_capture_last = context.baseline_output
         self._command_capture_changed_at = context.started_at
-        self._start_command_poll()
+        if self._should_poll_command(block):
+            self._start_command_poll()
         self._render_command_blocks()
         self._apply_quiet_radar()
         return block
@@ -859,6 +952,10 @@ class TerminalView(Gtk.Box):
             block.exact = True
             block.shell = shell
             block.cwd = cwd or block.cwd
+            if self._should_poll_command(block):
+                self._start_command_poll()
+            else:
+                self._stop_command_poll()
             self._render_command_blocks()
         self._armed_command_context = None
 
@@ -870,7 +967,17 @@ class TerminalView(Gtk.Box):
         block.end_cwd = cwd or block.cwd
         self._finish_command_capture()
 
+    def _command_blocks_visible(self) -> bool:
+        button = getattr(self, "command_blocks_button", None)
+        return bool(button is not None and button.get_active())
+
+    def _should_poll_command(self, block: SemanticCommandBlock) -> bool:
+        return not block.exact or self._command_blocks_visible()
+
     def _start_command_poll(self) -> None:
+        block = self._pending_command_block
+        if block is None or not self._should_poll_command(block):
+            return
         if self._command_poll_timer_id is None:
             self._command_poll_timer_id = GLib.timeout_add(
                 400, self._command_poll_tick
@@ -880,14 +987,62 @@ class TerminalView(Gtk.Box):
         if self._command_poll_timer_id is not None:
             GLib.source_remove(self._command_poll_timer_id)
             self._command_poll_timer_id = None
+        self._command_poll_generation += 1
+        future = self._command_capture_future
+        self._command_capture_future = None
+        if future is not None:
+            future.cancel()
 
     def _command_poll_tick(self) -> bool:
         block = self._pending_command_block
-        if block is None:
+        if block is None or not self._should_poll_command(block):
             self._command_poll_timer_id = None
             return False
+        if self._command_capture_future is not None:
+            return True
+        generation = self._command_poll_generation
+        try:
+            future = self._capture_executor.submit(
+                self.backend.capture_recent_output,
+                self.session.tmux_name,
+            )
+        except RuntimeError as exc:
+            self._command_poll_timer_id = None
+            self._report_capture_error(exc)
+            return False
+        self._command_capture_future = future
+        future.add_done_callback(
+            lambda completed, block_id=block.id, token=generation: GLib.idle_add(
+                self._command_poll_done,
+                block_id,
+                token,
+                completed,
+            )
+        )
+        return True
+
+    def _command_poll_done(
+        self,
+        block_id: int,
+        generation: int,
+        future: concurrent.futures.Future[str],
+    ) -> bool:
+        if self._destroyed or generation != self._command_poll_generation:
+            return False
+        if self._command_capture_future is future:
+            self._command_capture_future = None
+        try:
+            capture = future.result()
+        except concurrent.futures.CancelledError:
+            return False
+        except Exception as exc:
+            self._stop_command_poll()
+            self._report_capture_error(exc)
+            return False
+        block = self._pending_command_block
+        if block is None or block.id != block_id:
+            return False
         now = time.monotonic()
-        capture = self.backend.capture_recent_output(self.session.tmux_name)
         if capture != self._command_capture_last:
             self._command_capture_last = capture
             self._command_capture_changed_at = now
@@ -897,7 +1052,7 @@ class TerminalView(Gtk.Box):
             self._render_command_blocks()
 
         if block.exact:
-            return True
+            return False
 
         snapshot = self._last_snapshot
         shell_idle = bool(
@@ -913,10 +1068,14 @@ class TerminalView(Gtk.Box):
             (block.saw_process and stable_for >= 0.2)
             or (elapsed >= 1.2 and stable_for >= 0.55)
         ):
-            self._command_poll_timer_id = None
-            self._finish_command_capture(capture, stop_timer=False)
-            return False
-        return True
+            self._finish_command_capture(capture)
+        return False
+
+    def _report_capture_error(self, error: BaseException) -> None:
+        if self.on_runtime_error is not None:
+            self.on_runtime_error("Command output capture failed", error)
+        else:
+            record_runtime_error("Command output capture failed", error)
 
     def _finish_command_capture(
         self, capture: Optional[str] = None, stop_timer: bool = True
@@ -926,21 +1085,80 @@ class TerminalView(Gtk.Box):
             return
         if stop_timer:
             self._stop_command_poll()
-        capture = (
-            capture
-            if capture is not None
-            else self.backend.capture_recent_output(self.session.tmux_name)
+        self._pending_command_block = None
+        self._armed_command_context = None
+        end_cwd = block.end_cwd or (
+            self._last_snapshot.cwd if self._last_snapshot else block.cwd
         )
+        block.end_cwd = end_cwd
+        try:
+            future = self._capture_executor.submit(
+                self._collect_command_completion,
+                capture,
+                end_cwd,
+            )
+        except RuntimeError as exc:
+            self._report_capture_error(exc)
+            self._complete_command_capture(block, capture or "", None)
+            return
+        self._command_finish_futures.add(future)
+        future.add_done_callback(
+            lambda completed, item=block: GLib.idle_add(
+                self._command_finish_done,
+                item,
+                completed,
+            )
+        )
+        self._apply_quiet_radar()
+
+    def _collect_command_completion(
+        self,
+        capture: Optional[str],
+        end_cwd: str,
+    ) -> tuple[str, Optional[GitImpactSnapshot]]:
+        if capture is None:
+            capture = self.backend.capture_recent_output(self.session.tmux_name)
+        return capture, capture_git_impact(end_cwd)
+
+    def _command_finish_done(
+        self,
+        block: SemanticCommandBlock,
+        future: concurrent.futures.Future[
+            tuple[str, Optional[GitImpactSnapshot]]
+        ],
+    ) -> bool:
+        self._command_finish_futures.discard(future)
+        if self._destroyed:
+            return False
+        try:
+            capture, git_after = future.result()
+        except concurrent.futures.CancelledError:
+            return False
+        except Exception as exc:
+            self._report_capture_error(exc)
+            capture, git_after = self._command_capture_last, None
+        self._complete_command_capture(block, capture, git_after)
+        return False
+
+    def _complete_command_capture(
+        self,
+        block: SemanticCommandBlock,
+        capture: str,
+        git_after: Optional[GitImpactSnapshot],
+    ) -> None:
         output, truncated = terminal_output_delta(block.baseline_output, capture)
         block.output = without_trailing_prompt(output)
         block.truncated = block.truncated or truncated
         block.finished_at = time.monotonic()
-        self._finish_command_impact(block)
+        self._finish_command_impact(block, git_after)
         key = " ".join(block.command.split())
+        try:
+            block_index = self.command_blocks.index(block)
+        except ValueError:
+            return
         previous = next(
             (
-                candidate
-                for candidate in reversed(self.command_blocks[:-1])
+                candidate for candidate in reversed(self.command_blocks[:block_index])
                 if candidate.finished_at is not None
                 and " ".join(candidate.command.split()) == key
             ),
@@ -953,16 +1171,18 @@ class TerminalView(Gtk.Box):
                 block.added_lines,
                 block.removed_lines,
             ) = ghost_diff(previous.output, block.output)
-        self._pending_command_block = None
-        self._armed_command_context = None
         self._render_command_blocks()
         self._show_command_completion_radar(block.exit_code not in (None, 0))
 
-    def _finish_command_impact(self, block: SemanticCommandBlock) -> None:
+    def _finish_command_impact(
+        self,
+        block: SemanticCommandBlock,
+        git_after: Optional[GitImpactSnapshot] = None,
+    ) -> None:
         snapshot = self._last_snapshot
         end_cwd = block.end_cwd or (snapshot.cwd if snapshot else block.cwd)
         block.end_cwd = end_cwd
-        block.git_after = capture_git_impact(end_cwd)
+        block.git_after = git_after
         block.git_impact = compare_git_impact(block.git_before, block.git_after)
         block.branch_after = (
             block.git_after.branch
@@ -1062,13 +1282,6 @@ class TerminalView(Gtk.Box):
         )
         if self._radar_completion_active and state in ("idle", "service"):
             state = "error" if self._radar_completion_error else "ready"
-        self._radar_state = state
-        class_name = f"radar-{state}"
-        for widget in (self.terminal_shell, self.radar_indicator):
-            context = widget.get_style_context()
-            for candidate in RADAR_CLASSES:
-                context.remove_class(candidate)
-            context.add_class(class_name)
         descriptions = {
             "idle": "idle",
             "working": "command or agent running",
@@ -1088,7 +1301,18 @@ class TerminalView(Gtk.Box):
         elif state == "service" and snapshot:
             ports = ", ".join(str(service.port) for service in snapshot.services)
             detail += f" · {ports}"
-        self.radar_indicator.set_tooltip_text(f"Quiet radar: {detail}")
+        tooltip = f"Quiet radar: {detail}"
+        if state != self._radar_state:
+            self._radar_state = state
+            class_name = f"radar-{state}"
+            for widget in (self.terminal_shell, self.radar_indicator):
+                context = widget.get_style_context()
+                for candidate in RADAR_CLASSES:
+                    context.remove_class(candidate)
+                context.add_class(class_name)
+        if tooltip != self._radar_tooltip:
+            self._radar_tooltip = tooltip
+            self.radar_indicator.set_tooltip_text(tooltip)
 
     def _observe_command_impact(self, snapshot: TerminalSnapshot) -> None:
         block = self._pending_command_block
@@ -1130,30 +1354,50 @@ class TerminalView(Gtk.Box):
     def update_snapshot(
         self, snapshot: Optional[TerminalSnapshot], title: Optional[str] = None
     ) -> None:
+        previous = self._last_snapshot
         self._last_snapshot = snapshot
-        if snapshot:
+        if snapshot and snapshot != previous:
             self._observe_command_impact(snapshot)
         self._apply_quiet_radar()
-        if title:
+        if title and self.hud_title.get_text() != title:
             self.hud_title.set_text(title)
         if not snapshot:
+            self._update_hud_agent(None)
+            return
+        path = display_path(snapshot.cwd)
+        if self.hud_path.get_text() != path:
+            self.hud_path.set_text(path)
+        if self.hud_path.get_tooltip_text() != snapshot.cwd:
+            self.hud_path.set_tooltip_text(snapshot.cwd)
+        branch = f"GIT // {snapshot.branch}" if snapshot.branch else "NO REPOSITORY"
+        if self.hud_branch.get_text() != branch:
+            self.hud_branch.set_text(branch)
+        resources = resource_text(snapshot.cpu_percent, snapshot.memory_bytes)
+        if self.hud_resources.get_text() != resources:
+            self.hud_resources.set_text(resources)
+        ports = " ".join(f":{service.port}" for service in snapshot.services)
+        services = f"PORTS // {ports}" if ports else "NO SERVICES"
+        if self.hud_services.get_text() != services:
+            self.hud_services.set_text(services)
+        self._update_hud_agent(snapshot)
+
+    def _update_hud_agent(
+        self, snapshot: Optional[TerminalSnapshot]
+    ) -> None:
+        state = (snapshot.status, snapshot.agent.value if snapshot.agent else None) if snapshot else None
+        if state == self._hud_agent_state:
+            return
+        self._hud_agent_state = state
+        if snapshot is None or (
+            snapshot.status == AgentStatus.SHELL and not snapshot.agent
+        ):
             self.hud_agent.set_no_show_all(True)
             self.hud_agent.hide()
             return
-        self.hud_path.set_text(display_path(snapshot.cwd))
-        self.hud_path.set_tooltip_text(snapshot.cwd)
-        self.hud_branch.set_text(f"GIT // {snapshot.branch}" if snapshot.branch else "NO REPOSITORY")
-        self.hud_resources.set_text(resource_text(snapshot.cpu_percent, snapshot.memory_bytes))
-        ports = " ".join(f":{service.port}" for service in snapshot.services)
-        self.hud_services.set_text(f"PORTS // {ports}" if ports else "NO SERVICES")
         context = self.hud_agent.get_style_context()
         for class_name in ("status-working", "status-action", "status-ready", "status-error", "status-shell"):
             context.remove_class(class_name)
         agent = snapshot.agent.value.upper() if snapshot.agent else "SHELL"
-        if snapshot.status == AgentStatus.SHELL and not snapshot.agent:
-            self.hud_agent.set_no_show_all(True)
-            self.hud_agent.hide()
-            return
         self.hud_agent.set_no_show_all(False)
         self.hud_agent.show()
         if snapshot.status == AgentStatus.WORKING:
@@ -1383,6 +1627,12 @@ class TerminalView(Gtk.Box):
             GLib.source_remove(self._selection_clipboard_timer_id)
             self._selection_clipboard_timer_id = None
         self._stop_command_poll()
+        finish_futures = getattr(self, "_command_finish_futures", set())
+        for future in tuple(finish_futures):
+            future.cancel()
+        finish_futures.clear()
+        if getattr(self, "_owns_capture_executor", False):
+            self._capture_executor.shutdown(wait=False, cancel_futures=True)
         if self._radar_completion_timer_id is not None:
             GLib.source_remove(self._radar_completion_timer_id)
             self._radar_completion_timer_id = None

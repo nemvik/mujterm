@@ -17,6 +17,11 @@
     <binary>mujterm</binary>
   </provides>
   <releases>
+    <release version="0.1.4" date="2026-08-13">
+      <description>
+        <p>Reduces Command Block polling, moves captures off the UI thread, and applies snapshots incrementally.</p>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-08-13">
       <description>
         <p>Adds private rotating logs, visible runtime errors, and safe database migrations with backups.</p>
