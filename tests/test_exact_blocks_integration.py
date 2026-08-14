@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Callable
 from unittest.mock import patch
 
 import gi
@@ -63,6 +64,7 @@ class ExactBlocksIntegrationTests(unittest.TestCase):
                 window = Gtk.Window(title="MujTerm Exact Blocks Smoke")
                 window.set_default_size(1100, 760)
                 view: TerminalView | None = None
+                unexpected_exits: list[str] = []
                 capture_count = 0
                 capture_lock = threading.Lock()
                 capture_recent_output = backend.capture_recent_output
@@ -100,15 +102,49 @@ class ExactBlocksIntegrationTests(unittest.TestCase):
                         terminal,
                         backend,
                         lambda _terminal_id: None,
-                        lambda _terminal_id: None,
+                        unexpected_exits.append,
                         lambda _terminal_id: None,
                         lambda _event: False,
                         lambda _uri: None,
                         lambda _query, _case: None,
                     )
-                    window.add(view)
+                    stack = Gtk.Stack(transition_duration=0)
+                    stack.add_named(view, "terminal")
+                    stack.add_named(Gtk.Label(label="Hidden workspace"), "other")
+                    stack.set_visible_child_name("terminal")
+                    window.add(stack)
                     window.show_all()
-                    self._iterate_for(0.25)
+                    self.assertTrue(
+                        self._iterate_until(
+                            lambda: view is not None and view._child_pid is not None,
+                            3.0,
+                        ),
+                        "initial VTE tmux client did not attach",
+                    )
+                    initial_child_pid = view._child_pid
+                    stack.set_visible_child_name("other")
+                    self.assertTrue(
+                        self._iterate_until(
+                            lambda: view is not None
+                            and view._suspended
+                            and view._child_pid is None,
+                            5.0,
+                        ),
+                        "hidden VTE tmux client did not detach",
+                    )
+                    self.assertTrue(backend.has_session(terminal.tmux_name))
+                    self.assertFalse(unexpected_exits)
+                    stack.set_visible_child_name("terminal")
+                    self.assertTrue(
+                        self._iterate_until(
+                            lambda: view is not None
+                            and view._child_pid is not None
+                            and view._child_pid != initial_child_pid,
+                            3.0,
+                        ),
+                        "visible VTE tmux client did not reattach",
+                    )
+                    self.assertFalse(unexpected_exits)
                     backend.send_command(
                         terminal.tmux_name,
                         [
@@ -156,6 +192,15 @@ class ExactBlocksIntegrationTests(unittest.TestCase):
             while Gtk.events_pending():
                 Gtk.main_iteration_do(False)
             time.sleep(0.01)
+
+    @classmethod
+    def _iterate_until(cls, condition: Callable[[], bool], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            cls._iterate_for(0.02)
+            if condition():
+                return True
+        return False
 
 
 if __name__ == "__main__":

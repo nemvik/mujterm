@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import re
+import signal
 import unittest
 from types import SimpleNamespace
 from types import MethodType
@@ -20,6 +21,11 @@ from mujterm.models import (
     TerminalSession,
     TerminalSnapshot,
     ToolboxCommand,
+)
+from mujterm.sidebar import TerminalRow
+from mujterm.terminal_view import (
+    HIDDEN_TERMINAL_SUSPEND_DELAY_MS,
+    VTE_SCROLLBACK_LINES,
 )
 from mujterm.ui import (
     MainWindow,
@@ -287,6 +293,10 @@ class TerminalViewTests(unittest.TestCase):
     def test_terminal_attach_is_spawned_asynchronously(self) -> None:
         terminal = SimpleNamespace(spawn_async=Mock())
         view = SimpleNamespace(
+            _destroyed=False,
+            _should_be_attached=True,
+            _spawn_in_progress=False,
+            _child_pid=None,
             terminal=terminal,
             backend=SimpleNamespace(
                 attach_command=Mock(return_value=["tmux", "attach-session"])
@@ -311,11 +321,135 @@ class TerminalViewTests(unittest.TestCase):
         self.assertIsNotNone(arguments[8])
         self.assertIs(arguments[9], view._spawn_finished)
         self.assertIsNone(arguments[10])
+        self.assertTrue(view._spawn_in_progress)
+
+    def test_hidden_terminal_detaches_and_resumes_without_reporting_exit(self) -> None:
+        terminal = SimpleNamespace(reset=Mock())
+        view = SimpleNamespace(
+            _destroyed=False,
+            _should_be_attached=True,
+            _spawn_in_progress=False,
+            _spawn_cancellable=None,
+            _child_pid=4321,
+            _suspend_requested=False,
+            _suspended=False,
+            _suspend_timer_id=None,
+            _cancel_suspend_timer=Mock(),
+            _signal_child_for_suspend=None,
+            _spawn_after_suspend=None,
+            _spawn=Mock(),
+            terminal=terminal,
+            session=SimpleNamespace(id="terminal-1"),
+            on_exit=Mock(),
+            on_runtime_error=Mock(),
+        )
+        view._signal_child_for_suspend = MethodType(
+            TerminalView._signal_child_for_suspend, view
+        )
+        view._spawn_after_suspend = MethodType(
+            TerminalView._spawn_after_suspend, view
+        )
+
+        with patch("mujterm.terminal_view.os.kill") as kill:
+            TerminalView.suspend(view)
+
+        kill.assert_called_once_with(4321, signal.SIGTERM)
+        self.assertTrue(view._suspend_requested)
+        self.assertFalse(view._should_be_attached)
+
+        TerminalView._child_exited(view, terminal, 0)
+
+        view.on_exit.assert_not_called()
+        self.assertTrue(view._suspended)
+        self.assertIsNone(view._child_pid)
+        terminal.reset.assert_called_once_with(True, True)
+
+        TerminalView.resume(view)
+
+        self.assertEqual(terminal.reset.call_count, 2)
+        view._spawn.assert_called_once_with()
+        self.assertTrue(view._should_be_attached)
+
+    def test_hidden_terminal_suspend_waits_for_visibility_grace_period(self) -> None:
+        view = SimpleNamespace(
+            _destroyed=False,
+            _suspend_timer_id=None,
+            _suspend_if_still_hidden=Mock(),
+        )
+        with patch("mujterm.terminal_view.GLib.timeout_add", return_value=91) as add:
+            TerminalView._visibility_unmapped(view)
+
+        add.assert_called_once_with(
+            HIDDEN_TERMINAL_SUSPEND_DELAY_MS,
+            view._suspend_if_still_hidden,
+        )
+        self.assertEqual(view._suspend_timer_id, 91)
+
+    def test_successful_spawn_wins_a_quick_visibility_cancel_race(self) -> None:
+        view = SimpleNamespace(
+            _destroyed=False,
+            _spawn_cancellable=Mock(),
+            _spawn_in_progress=True,
+            _child_pid=None,
+            _should_be_attached=True,
+            _suspend_requested=True,
+            _suspended=True,
+            _signal_child_for_suspend=Mock(),
+        )
+
+        TerminalView._spawn_finished(view, Mock(), 4321, None)
+
+        self.assertEqual(view._child_pid, 4321)
+        self.assertFalse(view._spawn_in_progress)
+        self.assertFalse(view._suspend_requested)
+        self.assertFalse(view._suspended)
+        view._signal_child_for_suspend.assert_not_called()
+
+    def test_vte_keeps_only_the_bounded_duplicate_scrollback(self) -> None:
+        self.assertEqual(VTE_SCROLLBACK_LINES, 10_000)
+
+    def test_working_spinner_runs_only_for_the_active_mapped_row(self) -> None:
+        row = SimpleNamespace(
+            _last_status=(AgentStatus.WORKING, "Codex"),
+            _last_active=True,
+            get_mapped=Mock(return_value=False),
+            spinner=Mock(),
+            indicator=Mock(),
+        )
+
+        TerminalRow._sync_status_animation(row)
+
+        row.spinner.stop.assert_called_once_with()
+        row.spinner.hide.assert_called_once_with()
+        row.spinner.start.assert_not_called()
+        row.indicator.show.assert_called_once_with()
+
+        row.spinner.reset_mock()
+        row.indicator.reset_mock()
+        row.get_mapped.return_value = True
+        row._last_active = False
+        TerminalRow._sync_status_animation(row)
+
+        row.spinner.start.assert_not_called()
+        row.indicator.show.assert_called_once_with()
+
+        row.spinner.reset_mock()
+        row.indicator.reset_mock()
+        row._last_active = True
+        TerminalRow._sync_status_animation(row)
+
+        row.spinner.show.assert_called_once_with()
+        row.spinner.start.assert_called_once_with()
+        row.spinner.stop.assert_not_called()
+        row.indicator.hide.assert_called_once_with()
 
     def test_destroy_cancels_a_pending_terminal_spawn(self) -> None:
         cancellable = Mock()
         view = SimpleNamespace(
             _destroyed=False,
+            _should_be_attached=True,
+            _suspend_timer_id=None,
+            _cancel_suspend_timer=Mock(),
             _spawn_cancellable=cancellable,
             _stop_selection_autoscroll=Mock(),
             _selection_clipboard_timer_id=None,

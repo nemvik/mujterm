@@ -4,6 +4,7 @@ import concurrent.futures
 import difflib
 import os
 import re
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,8 @@ PCRE2_MULTILINE = 0x00000400
 PCRE2_UCP = 0x00020000
 PCRE2_UTF = 0x00080000
 URL_PATTERN = r"(?:https?://|www\.)[^\s<>\[\]{}\"']+"
+VTE_SCROLLBACK_LINES = 10_000
+HIDDEN_TERMINAL_SUSPEND_DELAY_MS = 1_500
 
 
 def display_path(path: str) -> str:
@@ -334,14 +337,24 @@ class TerminalView(Gtk.Box):
         self._radar_completion_error = False
         self._radar_completion_timer_id: Optional[int] = None
         self._spawn_cancellable: Optional[Gio.Cancellable] = None
+        self._spawn_in_progress = False
+        self._child_pid: Optional[int] = None
+        self._should_be_attached = True
+        self._suspend_requested = False
+        self._suspended = False
+        self._suspend_timer_id: Optional[int] = None
         self._destroyed = False
+        self.connect("map", self._visibility_mapped)
+        self.connect("unmap", self._visibility_unmapped)
         self.connect("destroy", self._selection_destroyed)
         self._build_hud()
         self._build_search()
         self.terminal_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.terminal_shell.get_style_context().add_class("terminal-shell")
         self.terminal = Vte.Terminal()
-        self.terminal.set_scrollback_lines(50_000)
+        # tmux remains the authoritative 50k-line history. Keeping a smaller
+        # VTE copy avoids retaining the same scrollback twice for every view.
+        self.terminal.set_scrollback_lines(VTE_SCROLLBACK_LINES)
         self.terminal.set_scroll_on_output(False)
         self.terminal.set_scroll_on_keystroke(True)
         self.terminal.set_mouse_autohide(True)
@@ -354,7 +367,7 @@ class TerminalView(Gtk.Box):
         self.terminal.connect("key-press-event", self._on_key_press)
         self.terminal.connect("button-press-event", self._on_pointer_input)
         self.terminal.connect("focus-in-event", self._on_focus_in)
-        self.terminal.connect("child-exited", lambda *_args: self.on_exit(self.session.id))
+        self.terminal.connect("child-exited", self._child_exited)
         self.terminal_shell.pack_start(self.terminal, True, True, 0)
         self.pack_start(self.terminal_shell, True, True, 0)
         self._build_command_blocks()
@@ -1451,10 +1464,18 @@ class TerminalView(Gtk.Box):
         return color
 
     def _spawn(self) -> None:
+        if (
+            self._destroyed
+            or not self._should_be_attached
+            or self._spawn_in_progress
+            or self._child_pid is not None
+        ):
+            return
         environment = [f"{key}={value}" for key, value in os.environ.items()]
         environment.append("COLORTERM=truecolor")
         argv = self.backend.attach_command(self.session.tmux_name)
         self._spawn_cancellable = Gio.Cancellable()
+        self._spawn_in_progress = True
         try:
             self.terminal.spawn_async(
                 Vte.PtyFlags.DEFAULT,
@@ -1471,6 +1492,8 @@ class TerminalView(Gtk.Box):
             )
         except GLib.Error as error:
             self._spawn_cancellable = None
+            self._spawn_in_progress = False
+            self._suspended = True
             self._show_spawn_error(error)
 
     def _spawn_finished(
@@ -1481,11 +1504,137 @@ class TerminalView(Gtk.Box):
         _user_data: Any = None,
     ) -> None:
         self._spawn_cancellable = None
-        if self._destroyed or error is None:
+        self._spawn_in_progress = False
+        if self._destroyed:
             return
-        if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+        if error is not None:
+            cancelled = error.matches(
+                Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED
+            )
+            expected_cancel = cancelled and (
+                self._suspend_requested or not self._should_be_attached
+            )
+            self._suspend_requested = False
+            self._suspended = True
+            if expected_cancel:
+                if self._should_be_attached:
+                    self._spawn_after_suspend()
+                else:
+                    self.terminal.reset(True, True)
+                return
+            self._show_spawn_error(error)
             return
-        self._show_spawn_error(error)
+        self._child_pid = _child_pid if _child_pid > 0 else None
+        self._suspended = False
+        if not self._should_be_attached:
+            self._suspend_requested = True
+            self._signal_child_for_suspend()
+        else:
+            # A spawn cancellation can lose a race with a quick remap. In
+            # that case the successful child is already the desired client.
+            self._suspend_requested = False
+
+    def suspend(self) -> None:
+        """Detach the VTE tmux client while leaving its tmux session alive."""
+        if self._destroyed:
+            return
+        self._cancel_suspend_timer()
+        self._should_be_attached = False
+        if self._child_pid is not None:
+            if not self._suspend_requested:
+                self._suspend_requested = True
+                self._signal_child_for_suspend()
+            return
+        if self._spawn_in_progress and self._spawn_cancellable is not None:
+            self._suspend_requested = True
+            self._spawn_cancellable.cancel()
+            return
+        self._suspended = True
+
+    def resume(self) -> None:
+        """Attach VTE again after a hidden terminal becomes visible."""
+        if self._destroyed:
+            return
+        self._cancel_suspend_timer()
+        self._should_be_attached = True
+        if self._suspend_requested:
+            # SIGTERM/cancellation is already in flight. The completion
+            # handler will immediately reattach without reporting an exit.
+            return
+        if self._child_pid is not None or self._spawn_in_progress:
+            self._suspended = False
+            return
+        self._spawn_after_suspend()
+
+    def _spawn_after_suspend(self) -> None:
+        if self._destroyed or not self._should_be_attached:
+            return
+        # tmux redraws the complete current screen after attach, so discard
+        # VTE's stale duplicate before starting the fresh client.
+        self.terminal.reset(True, True)
+        self._suspended = False
+        self._spawn()
+
+    def _signal_child_for_suspend(self) -> None:
+        if self._child_pid is None:
+            self._suspend_requested = False
+            self._suspended = True
+            if self._should_be_attached:
+                self._spawn_after_suspend()
+            return
+        try:
+            os.kill(self._child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            # VTE already has the corresponding child-exited notification
+            # queued; keep the request set so that notification is ignored.
+            return
+        except OSError as error:
+            self._suspend_requested = False
+            self._should_be_attached = True
+            if self.on_runtime_error is not None:
+                self.on_runtime_error("Terminal suspend failed", error)
+            else:
+                record_runtime_error("Terminal suspend failed", error)
+
+    def _child_exited(
+        self, _terminal: Vte.Terminal, _status: int
+    ) -> None:
+        expected = self._suspend_requested or not self._should_be_attached
+        self._child_pid = None
+        if self._destroyed:
+            return
+        if expected:
+            self._suspend_requested = False
+            self._suspended = True
+            if self._should_be_attached:
+                self._spawn_after_suspend()
+            else:
+                self.terminal.reset(True, True)
+            return
+        self._suspended = True
+        self.on_exit(self.session.id)
+
+    def _visibility_mapped(self, *_args: Any) -> None:
+        self.resume()
+
+    def _visibility_unmapped(self, *_args: Any) -> None:
+        if self._destroyed or self._suspend_timer_id is not None:
+            return
+        self._suspend_timer_id = GLib.timeout_add(
+            HIDDEN_TERMINAL_SUSPEND_DELAY_MS,
+            self._suspend_if_still_hidden,
+        )
+
+    def _suspend_if_still_hidden(self) -> bool:
+        self._suspend_timer_id = None
+        if not self._destroyed and not self.get_mapped():
+            self.suspend()
+        return False
+
+    def _cancel_suspend_timer(self) -> None:
+        if self._suspend_timer_id is not None:
+            GLib.source_remove(self._suspend_timer_id)
+            self._suspend_timer_id = None
 
     def _show_spawn_error(self, error: BaseException) -> None:
         if self.on_runtime_error is not None:
@@ -1619,6 +1768,8 @@ class TerminalView(Gtk.Box):
 
     def _selection_destroyed(self, *_args: Any) -> None:
         self._destroyed = True
+        self._should_be_attached = False
+        self._cancel_suspend_timer()
         if self._spawn_cancellable is not None:
             self._spawn_cancellable.cancel()
             self._spawn_cancellable = None

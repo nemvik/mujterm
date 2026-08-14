@@ -60,6 +60,7 @@ class TerminalRow(Gtk.ListBoxRow):
         content.pack_start(text, True, True, 0)
         self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         self.spinner = Gtk.Spinner()
+        self.spinner.set_no_show_all(True)
         self.agent_label = Gtk.Label()
         self.indicator = Gtk.Label(label="●")
         self.status_box.pack_start(self.spinner, False, False, 0)
@@ -87,6 +88,8 @@ class TerminalRow(Gtk.ListBoxRow):
         self.add(layout)
         self.drag_dest_set(Gtk.DestDefaults.ALL, [TERMINAL_TARGET], Gdk.DragAction.MOVE)
         self.connect("drag-data-received", self._drag_data_received)
+        self.connect("map", self._sync_status_animation)
+        self.connect("unmap", self._sync_status_animation)
         self.update(None, False)
 
     def update(self, snapshot: Optional[TerminalSnapshot], active: bool) -> None:
@@ -97,6 +100,7 @@ class TerminalRow(Gtk.ListBoxRow):
                 context.add_class("active")
             else:
                 context.remove_class("active")
+            self._sync_status_animation()
         if not snapshot:
             metadata = display_path(self.session.last_cwd)
             if metadata != self._last_metadata:
@@ -155,14 +159,13 @@ class TerminalRow(Gtk.ListBoxRow):
         if status == AgentStatus.SHELL and not agent:
             self.status_box.set_no_show_all(True)
             self.status_box.hide()
+            self._sync_status_animation()
             return
         self.status_box.set_no_show_all(False)
         self.status_box.show()
         if status == AgentStatus.WORKING:
             context.add_class("status-working")
-            self.spinner.show()
-            self.spinner.start()
-            self.indicator.hide()
+            self.indicator.set_text("◌")
             tooltip = f"{agent or 'Agent'} is working"
         elif status == AgentStatus.NEEDS_ACTION:
             context.add_class("status-action")
@@ -185,6 +188,22 @@ class TerminalRow(Gtk.ListBoxRow):
             self.indicator.set_text("●")
             tooltip = "Shell"
         self.status_box.set_tooltip_text(tooltip)
+        self._sync_status_animation()
+
+    def _sync_status_animation(self, *_args: object) -> None:
+        working = bool(
+            self._last_status and self._last_status[0] == AgentStatus.WORKING
+        )
+        # Keep at most one animated indicator in the whole sidebar. Background
+        # agents remain clearly marked by the static working ring.
+        if working and self._last_active and self.get_mapped():
+            self.indicator.hide()
+            self.spinner.show()
+            self.spinner.start()
+            return
+        self.spinner.stop()
+        self.spinner.hide()
+        self.indicator.show()
 
     def _button_release(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         if event.button == 3:
@@ -343,5 +362,3 @@ class ProjectSection(Gtk.Box):
             self.window.move_project(payload.split(":", 1)[1], self.project.id)
             success = True
         Gtk.drag_finish(context, success, success, time_value)
-
-

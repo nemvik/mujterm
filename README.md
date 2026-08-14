@@ -143,6 +143,13 @@ between panes, `[` and `]` to switch workspaces, `n` for a new full workspace,
 `v` to split right, `s` to split down, `x` to close, `a` for the attention queue,
 and `q` or `Esc` to leave the mode.
 
+When a workspace stays hidden for 1.5 seconds, MujTerm detaches its VTE client
+and clears the local rendering buffer. The shell, running commands, and complete
+tmux history (50,000 lines by default) remain alive; returning to the workspace
+attaches a fresh client immediately. VTE keeps only a 10,000-line foreground
+copy. Only the active, visible terminal animates its status spinner; background
+working agents use a static indicator.
+
 ## Code layout
 
 The GTK window orchestration and shared styling live in `src/mujterm/ui.py`.
@@ -178,5 +185,5 @@ make deb
 The compatibility smoke test drives a real isolated tmux client and verifies
 that `htop` receives both F10 and its clickable Quit control.
 
-The Debian package is written to `dist/mujterm_0.1.4_all.deb`. To rebuild,
+The Debian package is written to `dist/mujterm_0.1.5_all.deb`. To rebuild,
 verify, and reinstall the current source in one step, run `make reinstall`.

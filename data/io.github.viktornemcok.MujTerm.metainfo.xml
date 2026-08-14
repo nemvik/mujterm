@@ -17,6 +17,11 @@
     <binary>mujterm</binary>
   </provides>
   <releases>
+    <release version="0.1.5" date="2026-08-14">
+      <description>
+        <p>Suspends hidden VTE clients, bounds duplicate scrollback, and stops off-screen status animations.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-08-13">
       <description>
         <p>Reduces Command Block polling, moves captures off the UI thread, and applies snapshots incrementally.</p>
