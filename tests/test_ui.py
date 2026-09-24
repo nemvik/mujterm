@@ -106,7 +106,6 @@ class TerminalViewTests(unittest.TestCase):
             _closing=False,
             snapshots={terminal.id: before},
             database=database,
-            _record_snapshot_events=Mock(),
             _apply_snapshots=Mock(),
             report_runtime_error=Mock(),
         )

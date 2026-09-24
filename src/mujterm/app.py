@@ -27,6 +27,14 @@ def disable_menu_bar_accelerator(settings: Optional[Gtk.Settings] = None) -> Non
         settings.set_property("gtk-menu-bar-accel", None)
 
 
+def prefer_dark_theme(settings: Optional[Gtk.Settings] = None) -> None:
+    """Match dialogs, menus and popovers to the dark terminal surface."""
+    if settings is None:
+        settings = Gtk.Settings.get_default()
+    if settings is not None:
+        settings.set_property("gtk-application-prefer-dark-theme", True)
+
+
 class MujTermApplication(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(
@@ -40,6 +48,7 @@ class MujTermApplication(Gtk.Application):
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)
         disable_menu_bar_accelerator()
+        prefer_dark_theme()
         action = Gio.SimpleAction.new("quit", None)
         action.connect("activate", lambda *_args: self.quit())
         self.add_action(action)

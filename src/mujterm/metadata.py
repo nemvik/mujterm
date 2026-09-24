@@ -47,13 +47,11 @@ class ProcessUsageSampler:
         self.signature_interval = signature_interval
         self._last_network_sample = 0.0
         self._last_signature_sample = 0.0
-        self._network_cache: dict[
-            int, tuple[tuple[ListeningService, ...], tuple[int, ...]]
-        ] = {}
+        self._network_cache: dict[int, tuple[ListeningService, ...]] = {}
 
     def sample(
         self, root_pids: Iterable[int]
-    ) -> dict[int, tuple[float, int, tuple[ListeningService, ...], tuple[int, ...]]]:
+    ) -> dict[int, tuple[float, int, tuple[ListeningService, ...]]]:
         roots = list(root_pids)
         processes = self._read_processes(roots)
         children: dict[int, list[int]] = defaultdict(list)
@@ -67,12 +65,10 @@ class ProcessUsageSampler:
             or now - self._last_network_sample >= self.network_interval
         )
         if refresh_network:
-            listening_sockets, connected_sockets = self._socket_tables()
-        output: dict[int, tuple[float, int, tuple[ListeningService, ...], tuple[int, ...]]] = {}
+            listening_sockets = self._socket_tables()
+        output: dict[int, tuple[float, int, tuple[ListeningService, ...]]] = {}
         relevant: set[int] = set()
-        network_cache: dict[
-            int, tuple[tuple[ListeningService, ...], tuple[int, ...]]
-        ] = {}
+        network_cache: dict[int, tuple[ListeningService, ...]] = {}
         for root in roots:
             tree = self._process_tree(root, children)
             relevant.update(tree)
@@ -94,15 +90,11 @@ class ProcessUsageSampler:
                 else 0.0
             )
             if refresh_network:
-                services, connected_ports = self._network_for_tree(
-                    tree, listening_sockets, connected_sockets
-                )
-                network_cache[root] = (services, connected_ports)
+                services = self._network_for_tree(tree, listening_sockets)
+                network_cache[root] = services
             else:
-                services, connected_ports = self._network_cache.get(
-                    root, ((), ())
-                )
-            output[root] = (cpu_percent, memory_bytes, services, connected_ports)
+                services = self._network_cache.get(root, ())
+            output[root] = (cpu_percent, memory_bytes, services)
 
         if refresh_network:
             self._network_cache = network_cache
@@ -200,9 +192,9 @@ class ProcessUsageSampler:
         return signatures
 
     @staticmethod
-    def _socket_tables() -> tuple[dict[str, int], dict[str, int]]:
+    def _socket_tables() -> dict[str, int]:
+        """Map socket inodes to their port for TCP sockets in LISTEN state."""
         listening: dict[str, int] = {}
-        connected: dict[str, int] = {}
         for path in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()[1:]
@@ -210,23 +202,21 @@ class ProcessUsageSampler:
                 continue
             for line in lines:
                 fields = line.split()
-                if len(fields) < 10 or fields[3] not in {"0A", "01"}:
+                if len(fields) < 10 or fields[3] != "0A":
                     continue
                 try:
-                    address = fields[1] if fields[3] == "0A" else fields[2]
-                    port = int(address.rsplit(":", 1)[1], 16)
+                    port = int(fields[1].rsplit(":", 1)[1], 16)
                 except (ValueError, IndexError):
                     continue
                 if port:
-                    (listening if fields[3] == "0A" else connected)[fields[9]] = port
-        return listening, connected
+                    listening[fields[9]] = port
+        return listening
 
     @staticmethod
     def _network_for_tree(
-        tree: set[int], listening_sockets: dict[str, int], connected_sockets: dict[str, int]
-    ) -> tuple[tuple[ListeningService, ...], tuple[int, ...]]:
+        tree: set[int], listening_sockets: dict[str, int]
+    ) -> tuple[ListeningService, ...]:
         by_port: dict[int, ListeningService] = {}
-        connected_ports: set[int] = set()
         for pid in tree:
             try:
                 descriptors = (Path("/proc") / str(pid) / "fd").iterdir()
@@ -241,15 +231,9 @@ class ProcessUsageSampler:
                     port = listening_sockets.get(match.group(1))
                     if port and port not in by_port:
                         by_port[port] = ListeningService(port=port, pid=pid)
-                    remote_port = connected_sockets.get(match.group(1))
-                    if remote_port:
-                        connected_ports.add(remote_port)
             except OSError:
                 continue
-        return (
-            tuple(by_port[port] for port in sorted(by_port)),
-            tuple(sorted(connected_ports)),
-        )
+        return tuple(by_port[port] for port in sorted(by_port))
 
     @staticmethod
     def _process_tree(root: int, children: dict[int, list[int]]) -> set[int]:
@@ -411,9 +395,7 @@ def _is_claude(signature: str) -> bool:
 
 def collect_snapshots(
     panes: dict[str, PaneInfo],
-    usage: Optional[
-        dict[int, tuple[float, int, tuple[ListeningService, ...], tuple[int, ...]]]
-    ] = None,
+    usage: Optional[dict[int, tuple[float, int, tuple[ListeningService, ...]]]] = None,
     detected_agents: Optional[dict[int, Optional[AgentKind]]] = None,
     git_cache: Optional[GitInfoCache] = None,
 ) -> dict[str, TerminalSnapshot]:
@@ -440,9 +422,7 @@ def collect_snapshots(
         elif not process_agent and pane.command.lower().startswith("claude"):
             process_agent = AgentKind.CLAUDE
         saved = load_agent_state(terminal_id)
-        cpu_percent, memory_bytes, services, connected_ports = usage.get(
-            pane.pane_pid, (0.0, 0, (), ())
-        )
+        cpu_percent, memory_bytes, services = usage.get(pane.pane_pid, (0.0, 0, ()))
         agent = process_agent
         status = AgentStatus.SHELL
         if pane.dead:
@@ -465,7 +445,6 @@ def collect_snapshots(
             cpu_percent=cpu_percent,
             memory_bytes=memory_bytes,
             services=services,
-            connected_ports=connected_ports,
             dead=pane.dead,
         )
     return snapshots

@@ -90,399 +90,225 @@ __all__ = [
 
 
 CSS = b"""
-.mujterm-window, .mujterm-root {
-  background: #070b14;
-  color: #dce8fa;
+/* One quiet palette shared by the chrome and the terminal itself: the status
+   colours are the terminal's own ANSI colours, surfaces are flat graphite. */
+@define-color mt_sidebar #17191e;
+@define-color mt_surface #1c1f25;
+@define-color mt_raised #262a31;
+@define-color mt_hover #21242a;
+@define-color mt_line #2b2f37;
+@define-color mt_text #dde1e7;
+@define-color mt_muted #8b919b;
+@define-color mt_faint #5d636d;
+@define-color mt_blue #61afef;
+@define-color mt_yellow #e5c07b;
+@define-color mt_green #98c379;
+@define-color mt_red #e06c75;
+@define-color mt_cyan #56b6c2;
+@define-color mt_magenta #c678dd;
+
+.mujterm-root { background-color: @mt_surface; }
+
+/* Sidebar */
+.mujterm-sidebar {
+  background-color: @mt_sidebar;
+  border-right: 1px solid @mt_line;
 }
-.mujterm-header {
-  min-height: 48px;
-  padding: 4px 10px;
-  background-image: linear-gradient(to right, #0a1020, #111a2c 52%, #081923);
-  color: #e8f4ff;
-  border-bottom: 1px solid #21445a;
-  box-shadow: 0 3px 16px rgba(0, 0, 0, 0.48);
-}
-.brand-mark {
-  color: #55e7ff;
-  font-family: Monospace;
-  font-size: 1.45em;
-  font-weight: bold;
-}
-.brand-title { color: #f2f8ff; font-weight: bold; font-size: 1.05em; }
-.brand-subtitle { color: #67849e; font-family: Monospace; font-size: 0.72em; }
-.hud-button {
-  min-width: 34px;
-  min-height: 30px;
-  color: #91abc4;
-  background: rgba(45, 77, 105, 0.18);
-  border: 1px solid rgba(100, 180, 220, 0.17);
-  border-radius: 8px;
+.mujterm-sidebar list,
+.mujterm-sidebar row,
+.mujterm-sidebar row:selected,
+.mujterm-sidebar row:hover {
+  background-color: transparent;
+  background-image: none;
   box-shadow: none;
 }
-.hud-button:hover {
-  color: #ffffff;
-  background: rgba(57, 215, 239, 0.16);
-  border-color: #2bb8d1;
-}
-.hud-button.attention-button-active {
-  color: #fff7d6;
-  background: rgba(253, 230, 138, 0.16);
-  border-color: rgba(253, 230, 138, 0.58);
-  font-weight: bold;
-}
-.overflow-button { font-family: Monospace; font-size: 1.15em; font-weight: bold; }
-.split-button {
-  min-width: 38px;
-  font-family: Monospace;
-  font-size: 1.1em;
-  font-weight: bold;
-}
-.mujterm-sidebar {
-  background-image: linear-gradient(to bottom, #0a101c, #080d17);
-  border-right: 1px solid #1a3447;
-}
-.sidebar-hud {
-  padding: 18px 15px 14px 15px;
-  background: rgba(15, 28, 45, 0.72);
-  border-bottom: 1px solid #172f42;
-}
-.sidebar-kicker { color: #4ddff3; font-family: Monospace; font-size: 0.76em; font-weight: bold; }
-.sidebar-title { color: #f0f7ff; font-size: 1.18em; font-weight: bold; }
-.sidebar-stat { color: #6f8ca7; font-family: Monospace; font-size: 0.75em; }
-.sidebar-footer {
-  padding: 8px 14px;
-  color: #3f657d;
-  background: #070c15;
-  border-top: 1px solid #142a3a;
-  font-family: Monospace;
-  font-size: 0.72em;
-}
-.mujterm-project-header { padding: 12px 10px 6px 12px; }
-.mujterm-project-title { color: #91a8c0; font-weight: bold; font-size: 0.86em; }
-.project-chevron { color: #35d3eb; font-family: Monospace; }
-.project-count {
-  color: #5d7892;
-  background: rgba(69, 113, 143, 0.16);
-  border: 1px solid rgba(86, 145, 180, 0.18);
-  border-radius: 9px;
-  padding: 1px 6px;
-  font-family: Monospace;
-  font-size: 0.72em;
-}
-.project-alert { color: #ffd76a; font-family: Monospace; font-weight: bold; }
+.mujterm-project-header { padding: 14px 10px 4px 14px; }
+.mujterm-project-title { color: @mt_muted; font-weight: bold; font-size: 0.86em; }
+.project-chevron { color: @mt_faint; font-size: 0.8em; }
+.project-count { color: @mt_faint; font-size: 0.82em; }
+.project-alert { color: @mt_yellow; font-weight: bold; font-size: 0.82em; }
 .project-ssh {
-  color: #bbf7d0;
-  background: rgba(134, 239, 172, 0.10);
-  border: 1px solid rgba(134, 239, 172, 0.38);
-  border-radius: 8px;
-  padding: 1px 5px;
-  font-family: Monospace;
-  font-size: 0.68em;
-  font-weight: bold;
+  color: @mt_muted;
+  border: 1px solid @mt_line;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 0.72em;
 }
-.mujterm-terminal-row {
-  color: #c9d8e8;
-  background: rgba(14, 24, 39, 0.72);
-  border: 1px solid rgba(52, 90, 119, 0.22);
-  border-radius: 8px;
-  padding: 9px 9px;
-  margin: 2px 7px;
-}
-.mujterm-terminal-row:hover {
-  color: #f3fbff;
-  background: rgba(28, 55, 76, 0.66);
-  border-color: rgba(73, 194, 220, 0.38);
-}
-.mujterm-terminal-row.active {
-  color: #ffffff;
-  background-image: linear-gradient(to right, rgba(25, 129, 157, 0.34), rgba(18, 45, 69, 0.80));
-  border-color: #2d9fb5;
-  box-shadow: inset 3px 0 #4ee6fa;
-}
-.terminal-row-action {
-  min-width: 24px;
-  min-height: 24px;
+.sidebar-action {
+  min-width: 22px;
+  min-height: 22px;
   padding: 0;
-  color: #5f7b93;
-  background: transparent;
+  color: @mt_faint;
+  background: none;
   border: 0;
   box-shadow: none;
 }
-.terminal-row-action:hover { color: #61e3f4; background: rgba(61, 211, 235, 0.12); }
-.terminal-row-close:hover { color: #ff7189; background: rgba(239, 67, 99, 0.13); }
-.mujterm-path { color: #638099; font-family: Monospace; font-size: 0.78em; }
-.mujterm-resources { color: #a9b3cc; font-family: Monospace; font-size: 0.72em; }
-.port-chip {
-  min-height: 19px;
-  padding: 0 6px;
-  color: #bbf7d0;
-  background: rgba(134, 239, 172, 0.10);
-  border: 1px solid rgba(134, 239, 172, 0.38);
-  border-radius: 8px;
-  font-family: Monospace;
-  font-size: 0.68em;
+.sidebar-action:hover { color: @mt_text; background-color: @mt_raised; }
+.mujterm-terminal-row {
+  color: @mt_text;
+  border-radius: 6px;
+  padding: 6px 6px 6px 10px;
+  margin: 1px 6px;
 }
-.port-chip:hover { color: #ffffff; background: rgba(134, 239, 172, 0.20); }
-.attention-panel { padding: 8px 10px; background: #211e34; border-bottom: 1px solid #5f567c; }
-.attention-title { color: #fef3c7; font-weight: bold; font-size: 0.78em; }
-.attention-item {
-  color: #fff7d6;
-  background: rgba(253, 230, 138, 0.09);
-  border: 1px solid rgba(253, 230, 138, 0.30);
-  border-radius: 7px;
-  padding: 4px 7px;
+.mujterm-sidebar row.mujterm-terminal-row:hover { background-color: @mt_hover; }
+.mujterm-sidebar row.mujterm-terminal-row.active {
+  background-color: @mt_raised;
+  box-shadow: inset 2px 0 @mt_blue;
+}
+.terminal-row-title { color: @mt_text; }
+.mujterm-path { color: @mt_muted; font-size: 0.84em; }
+.terminal-row-action {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  color: @mt_faint;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  opacity: 0;
+}
+.mujterm-terminal-row:hover .terminal-row-action,
+.mujterm-terminal-row.active .terminal-row-action { opacity: 1; }
+.terminal-row-action:hover { color: @mt_red; background-color: alpha(@mt_red, 0.12); }
+.port-chip {
+  min-height: 0;
+  padding: 0 5px;
+  color: @mt_cyan;
+  background: none;
+  border: 1px solid alpha(@mt_cyan, 0.35);
+  border-radius: 4px;
+  box-shadow: none;
   font-size: 0.78em;
 }
-.attention-item:hover { background: rgba(253, 230, 138, 0.18); border-color: #fde68a; }
-.toolbox-popover { padding: 12px; }
-.toolbox-title { color: #f1f5f9; font-family: Monospace; font-weight: bold; }
-.toolbox-target { color: #7dd3fc; font-family: Monospace; font-size: 0.72em; }
-.toolbox-row {
-  padding: 3px;
-  background: rgba(20, 34, 52, 0.76);
-  border: 1px solid rgba(84, 126, 157, 0.28);
-  border-radius: 7px;
+.port-chip:hover { background-color: alpha(@mt_cyan, 0.12); }
+.attention-panel {
+  padding: 8px 8px 10px 14px;
+  border-bottom: 1px solid @mt_line;
 }
-.toolbox-insert {
-  padding: 5px 7px;
-  color: #e5edf6;
-  background: transparent;
+.attention-title { color: @mt_yellow; font-weight: bold; font-size: 0.86em; }
+.attention-next, .attention-item {
+  min-height: 0;
+  padding: 3px 6px;
+  color: @mt_text;
+  background: none;
   border: 0;
   box-shadow: none;
+  font-size: 0.88em;
 }
-.toolbox-insert:hover { background: rgba(61, 211, 235, 0.11); }
-.toolbox-add {
-  padding: 7px 10px;
-  color: #061923;
-  background: #67e8f9;
-  border-color: #67e8f9;
-  font-family: Monospace;
-  font-weight: bold;
-}
-.toolbox-add:hover { color: #020617; background: #a5f3fc; border-color: #a5f3fc; }
-.toolbox-name { color: #f8fafc; font-weight: bold; }
-.toolbox-command { color: #8ca8bf; font-family: Monospace; font-size: 0.76em; }
-.toolbox-empty { padding: 18px 8px; color: #7891a8; }
-.toolbox-error { color: #fda4af; font-size: 0.82em; }
-.timeline-kind { color: #c4b5fd; font-family: Monospace; font-size: 0.76em; }
-.timeline-summary { color: #f5f3ff; }
-.timeline-meta { color: #9ca3b8; font-family: Monospace; font-size: 0.75em; }
-.status-working, .status-action, .status-ready, .status-error, .status-shell {
-  border-radius: 9px;
-  padding: 2px 6px;
-  font-family: Monospace;
-  font-size: 0.72em;
-}
-.status-working { color: #62deff; background: rgba(36, 156, 208, 0.14); border: 1px solid rgba(63, 200, 242, 0.28); }
-.status-action { color: #ffe07b; background: rgba(217, 154, 28, 0.15); border: 1px solid rgba(255, 198, 60, 0.36); font-weight: bold; }
-.status-ready { color: #66f2a6; background: rgba(31, 190, 113, 0.13); border: 1px solid rgba(71, 230, 151, 0.28); }
-.status-error { color: #ff778c; background: rgba(218, 50, 83, 0.14); border: 1px solid rgba(255, 91, 118, 0.30); }
-.status-shell { color: #617b93; background: rgba(52, 78, 100, 0.12); border: 1px solid rgba(78, 112, 139, 0.18); }
-.terminal-view { background: #050810; }
-.terminal-hud {
-  min-height: 41px;
-  padding: 7px 13px;
-  color: #bed1e4;
-  background-image: linear-gradient(to right, #0c1421, #0a1722);
-  border-bottom: 1px solid #17374a;
-}
-.terminal-hud-title { color: #eaf5ff; font-weight: bold; }
-.terminal-hud-path { color: #5f809b; font-family: Monospace; font-size: 0.78em; }
-.terminal-hud-chip {
-  color: #60dff4;
-  background: rgba(39, 154, 183, 0.12);
-  border: 1px solid rgba(63, 191, 220, 0.25);
-  border-radius: 9px;
-  padding: 2px 8px;
-  font-family: Monospace;
-  font-size: 0.74em;
-}
-.terminal-search {
-  padding: 6px 9px;
-  color: #e5e7eb;
-  background: #111827;
-  border-bottom: 1px solid #374151;
-}
-.terminal-search-entry { min-width: 120px; }
-.terminal-search-status {
-  color: #a6a7c5;
-  font-family: Monospace;
-  font-size: 0.72em;
-}
-.terminal-search-status.no-match { color: #fda4af; }
-.terminal-search-button {
-  min-width: 28px;
-  min-height: 26px;
-  padding: 0 6px;
-  color: #d8d5ff;
-  background: rgba(196, 181, 253, 0.10);
-  border: 1px solid rgba(196, 181, 253, 0.30);
-  box-shadow: none;
-}
-.terminal-search-button:hover { color: #ffffff; border-color: #c4b5fd; }
-.project-search-snippet { color: #b6c2d9; font-family: Monospace; font-size: 0.78em; }
-.terminal-shell {
-  padding: 8px 10px 10px 10px;
-  background: #050810;
-  border: 1px solid rgba(100, 116, 139, 0.12);
-  border-radius: 5px;
-}
-.terminal-shell.radar-working { border-color: rgba(103, 232, 249, 0.50); box-shadow: inset 0 0 12px rgba(34, 211, 238, 0.08); }
-.terminal-shell.radar-attention { border-color: rgba(253, 230, 138, 0.62); box-shadow: inset 0 0 13px rgba(250, 204, 21, 0.09); }
-.terminal-shell.radar-ready { border-color: rgba(134, 239, 172, 0.52); box-shadow: inset 0 0 12px rgba(74, 222, 128, 0.08); }
-.terminal-shell.radar-error { border-color: rgba(253, 164, 175, 0.68); box-shadow: inset 0 0 13px rgba(251, 113, 133, 0.10); }
-.terminal-shell.radar-hot { border-color: rgba(240, 171, 252, 0.68); box-shadow: inset 0 0 14px rgba(232, 121, 249, 0.10); }
-.terminal-shell.radar-service { border-color: rgba(147, 197, 253, 0.40); }
-.radar-indicator { color: #4b5563; font-family: Monospace; font-size: 0.72em; }
-.radar-indicator.radar-working { color: #67e8f9; }
-.radar-indicator.radar-attention { color: #fde68a; }
-.radar-indicator.radar-ready { color: #86efac; }
-.radar-indicator.radar-error { color: #fda4af; }
-.radar-indicator.radar-hot { color: #f0abfc; }
-.radar-indicator.radar-service { color: #93c5fd; }
-.command-block-toggle {
-  min-height: 24px;
-  padding: 1px 7px;
-  color: #c4b5fd;
-  background: rgba(196, 181, 253, 0.09);
-  border: 1px solid rgba(196, 181, 253, 0.28);
-  border-radius: 8px;
-  font-family: Monospace;
-  font-size: 0.70em;
-}
-.command-blocks {
-  padding: 7px 9px 9px 9px;
-  color: #e5e7eb;
-  background: #0d1220;
-  border-top: 1px solid #353b5a;
-}
-.command-blocks-title { color: #a5f3fc; font-family: Monospace; font-size: 0.72em; font-weight: bold; }
-.command-blocks-note { color: #818aa3; font-size: 0.70em; }
-.command-block-row {
-  margin: 2px 0;
-  padding: 0;
-  background: #151a2b;
-  border: 1px solid #353b5a;
-  border-radius: 7px;
-}
-.command-block-header { padding: 5px 8px; background: transparent; border: 0; box-shadow: none; }
-.command-block-command { color: #f1f5f9; font-family: Monospace; font-size: 0.78em; }
-.command-block-meta { color: #8b93aa; font-family: Monospace; font-size: 0.68em; }
-.command-block-diff { color: #f0abfc; font-family: Monospace; font-size: 0.70em; font-weight: bold; }
-.command-block-same { color: #86efac; font-family: Monospace; font-size: 0.70em; }
-.command-block-error { color: #fda4af; font-family: Monospace; font-size: 0.70em; font-weight: bold; }
-.command-block-output { padding: 7px 9px; color: #cbd5e1; background: #080b14; font-family: Monospace; font-size: 0.74em; }
-.command-block-clear { min-height: 22px; padding: 0 6px; color: #a6a7c5; background: transparent; border: 0; box-shadow: none; }
-.mujterm-workspace { background: #050810; }
-.welcome-glyph { color: #4ce3f5; font-family: Monospace; font-size: 3.4em; font-weight: bold; }
-.welcome-status {
-  color: #66f2a6;
-  background: rgba(31, 190, 113, 0.11);
-  border: 1px solid rgba(71, 230, 151, 0.25);
-  border-radius: 10px;
-  padding: 3px 10px;
-  font-family: Monospace;
-  font-size: 0.72em;
-}
-.welcome-title { color: #eff8ff; font-size: 1.8em; font-weight: bold; }
-.welcome-copy { color: #647f99; }
-.primary-action {
-  color: #061217;
-  background-image: linear-gradient(to right, #47def2, #68f3b2);
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 18px;
-  font-weight: bold;
-  box-shadow: 0 3px 12px rgba(41, 213, 228, 0.18);
-}
-.primary-action:hover { background-image: linear-gradient(to right, #77edfb, #8affca); }
-.mujterm-infobar { background: #102131; color: #b9d9ef; border-bottom: 1px solid #24516a; }
-.mujterm-runtime-error { background: #352516; color: #ffe7bd; border-bottom: 1px solid #805b2a; }
+.attention-next { color: @mt_yellow; }
+.attention-next:hover, .attention-item:hover { background-color: @mt_raised; }
 
-/* High-contrast pastel theme */
-.mujterm-window, .mujterm-root { background: #090d18; color: #f8fafc; }
-.mujterm-header {
-  background-image: linear-gradient(to right, #13182b, #20203a 52%, #142438);
-  border-bottom-color: #7569a8;
-}
-.brand-mark, .sidebar-kicker, .project-chevron { color: #8be9fd; }
-.brand-title, .sidebar-title, .welcome-title, .terminal-hud-title { color: #ffffff; }
-.brand-subtitle, .sidebar-stat { color: #b9b8dc; }
-.hud-button {
-  color: #d8d5ff;
-  background: rgba(177, 164, 255, 0.10);
-  border-color: rgba(196, 181, 253, 0.34);
-}
-.hud-button:hover {
-  color: #ffffff;
-  background: rgba(196, 181, 253, 0.22);
-  border-color: #c4b5fd;
-}
-.mujterm-sidebar {
-  background-image: linear-gradient(to bottom, #121628, #0d1220);
-  border-right-color: #4b5276;
-}
-.sidebar-hud { background: #181d33; border-bottom-color: #454c71; }
-.sidebar-footer { color: #a6a7c5; background: #0c101d; border-top-color: #353b5a; }
-.mujterm-project-title { color: #f1efff; font-size: 0.9em; }
-.project-count {
-  color: #e9d5ff;
-  background: rgba(216, 180, 254, 0.12);
-  border-color: rgba(216, 180, 254, 0.38);
-}
-.project-alert { color: #fde68a; }
-.project-ssh { color: #bbf7d0; border-color: rgba(134, 239, 172, 0.48); }
-.mujterm-terminal-row {
-  color: #f3f4f6;
-  background: #171c2e;
-  border-color: #414966;
-}
-.mujterm-terminal-row:hover {
-  color: #ffffff;
-  background: #202741;
-  border-color: #a5b4fc;
-}
-.mujterm-terminal-row.active {
-  color: #ffffff;
-  background-image: linear-gradient(to right, #3a315d, #253651);
-  border-color: #c4b5fd;
-  box-shadow: inset 4px 0 #f0abfc;
-}
-.mujterm-path, .terminal-hud-path { color: #b6c2d9; }
-.terminal-row-action { color: #b9c1d9; }
-.terminal-row-action:hover { color: #a5f3fc; background: rgba(165, 243, 252, 0.13); }
-.terminal-row-close:hover { color: #fda4af; background: rgba(253, 164, 175, 0.14); }
-.toolbox-title, .toolbox-name { color: #ffffff; }
-.toolbox-target { color: #a5f3fc; }
-.toolbox-row { background: #171c2e; border-color: #414966; }
-.toolbox-command { color: #b6c2d9; }
-.toolbox-insert:hover { background: rgba(165, 243, 252, 0.12); }
-.toolbox-add { color: #111827; background: #a5f3fc; border-color: #a5f3fc; }
-.toolbox-add:hover { color: #020617; background: #cffafe; border-color: #cffafe; }
-.toolbox-empty { color: #a6a7c5; }
-.status-working { color: #bae6fd; background: rgba(125, 211, 252, 0.14); border-color: rgba(125, 211, 252, 0.48); }
-.status-action { color: #fef3c7; background: rgba(253, 230, 138, 0.14); border-color: rgba(253, 230, 138, 0.52); }
-.status-ready { color: #bbf7d0; background: rgba(134, 239, 172, 0.13); border-color: rgba(134, 239, 172, 0.48); }
-.status-error { color: #fecdd3; background: rgba(253, 164, 175, 0.14); border-color: rgba(253, 164, 175, 0.50); }
-.status-shell { color: #d8d5ff; background: rgba(196, 181, 253, 0.10); border-color: rgba(196, 181, 253, 0.34); }
-.terminal-view, .terminal-shell, .mujterm-workspace { background: #080b14; }
+/* Status text uses colour plus a distinct glyph, never colour alone. */
+.status-working { color: @mt_blue; }
+.status-action { color: @mt_yellow; font-weight: bold; }
+.status-ready { color: @mt_green; }
+.status-error { color: @mt_red; }
+.status-shell { color: @mt_muted; }
+.status-working, .status-action, .status-ready, .status-error, .status-shell { font-size: 0.86em; }
+
+/* Header bar: the theme draws it; only the attention button is tinted. */
+.attention-button-active { color: @mt_yellow; font-weight: bold; }
+
+/* Command toolbox */
+.toolbox-title { font-weight: bold; }
+.toolbox-target { color: @mt_muted; font-size: 0.86em; }
+.toolbox-row { border-radius: 6px; }
+.toolbox-row:hover { background-color: alpha(currentColor, 0.06); }
+.toolbox-insert { padding: 4px 6px; background: none; border: 0; box-shadow: none; }
+.toolbox-name { font-weight: bold; }
+.toolbox-command { font-family: Monospace; font-size: 0.84em; opacity: 0.7; }
+.toolbox-empty { padding: 14px 6px; opacity: 0.7; }
+.toolbox-error { color: @mt_red; font-size: 0.9em; }
+
+/* Terminal pane */
+.terminal-view, .terminal-shell, .mujterm-workspace { background-color: @mt_surface; }
 .terminal-hud {
-  color: #e5e7eb;
-  background-image: linear-gradient(to right, #171b2e, #162238);
-  border-bottom-color: #535b83;
+  min-height: 30px;
+  padding: 3px 8px 3px 12px;
+  color: @mt_muted;
+  background-color: @mt_surface;
+  border-bottom: 1px solid @mt_line;
 }
-.terminal-hud-chip { color: #bae6fd; background: rgba(125, 211, 252, 0.10); border-color: rgba(125, 211, 252, 0.38); }
-.welcome-glyph { color: #c4b5fd; }
-.welcome-status { color: #bbf7d0; background: rgba(134, 239, 172, 0.10); border-color: rgba(134, 239, 172, 0.38); }
-.welcome-copy { color: #c4c7d8; }
-.primary-action {
-  color: #161225;
-  background-image: linear-gradient(to right, #c4b5fd, #f0abfc 52%, #a5f3fc);
-  box-shadow: 0 4px 18px rgba(196, 181, 253, 0.24);
+.terminal-hud-title { color: @mt_muted; font-weight: bold; }
+.terminal-view.focused .terminal-hud-title { color: @mt_text; }
+.terminal-hud-path { color: @mt_faint; }
+.terminal-hud-branch { color: @mt_magenta; }
+.terminal-hud-services { color: @mt_cyan; }
+.terminal-hud-resources { color: @mt_faint; font-feature-settings: "tnum"; }
+.terminal-hud-path, .terminal-hud-branch, .terminal-hud-services, .terminal-hud-resources { font-size: 0.86em; }
+.terminal-shell { padding: 6px 4px 4px 10px; }
+.radar-indicator { color: @mt_faint; font-size: 0.8em; }
+.radar-indicator.radar-working { color: @mt_blue; }
+.radar-indicator.radar-attention { color: @mt_yellow; }
+.radar-indicator.radar-ready { color: @mt_green; }
+.radar-indicator.radar-error { color: @mt_red; }
+.radar-indicator.radar-hot { color: @mt_magenta; }
+.radar-indicator.radar-service { color: @mt_cyan; }
+.terminal-hud-button {
+  min-height: 22px;
+  padding: 0 8px;
+  color: @mt_muted;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 0.86em;
 }
-.primary-action:hover { background-image: linear-gradient(to right, #ddd6fe, #f5d0fe 52%, #cffafe); }
-.mujterm-infobar { background: #24213a; color: #f5f3ff; border-bottom-color: #7c6faf; }
-.mujterm-runtime-error { background: #3a2830; color: #ffe4e8; border-bottom-color: #936071; }
+.terminal-hud-button:hover { color: @mt_text; background-color: @mt_raised; }
+.terminal-hud-button:checked { color: @mt_text; background-color: @mt_raised; }
+
+.terminal-search {
+  padding: 4px 8px;
+  background-color: @mt_surface;
+  border-bottom: 1px solid @mt_line;
+}
+.terminal-search-status { color: @mt_muted; font-size: 0.86em; }
+.terminal-search-status.no-match { color: @mt_red; }
+.terminal-search-button {
+  min-width: 26px;
+  min-height: 24px;
+  padding: 0 6px;
+  color: @mt_muted;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  box-shadow: none;
+}
+.terminal-search-button:hover, .terminal-search-button:checked { color: @mt_text; background-color: @mt_raised; }
+.project-search-snippet { font-family: Monospace; font-size: 0.84em; opacity: 0.8; }
+
+/* Command blocks */
+.command-blocks {
+  padding: 6px 8px 8px 10px;
+  color: @mt_text;
+  background-color: @mt_sidebar;
+  border-top: 1px solid @mt_line;
+}
+.command-blocks list { background-color: transparent; }
+.command-blocks-title { font-weight: bold; font-size: 0.9em; }
+.command-blocks-note { color: @mt_faint; font-size: 0.84em; }
+.command-block-row { margin: 1px 0; border-radius: 6px; }
+.command-block-header { padding: 4px 6px; background: none; border: 0; box-shadow: none; }
+.command-block-header:hover { background-color: @mt_hover; }
+.command-block-command { font-family: Monospace; font-size: 0.9em; }
+.command-block-meta { color: @mt_faint; font-size: 0.82em; font-feature-settings: "tnum"; }
+.command-block-diff { color: @mt_magenta; font-size: 0.82em; }
+.command-block-same { color: @mt_green; font-size: 0.82em; }
+.command-block-error { color: @mt_red; font-size: 0.82em; font-weight: bold; }
+.command-block-output {
+  padding: 6px 8px;
+  color: @mt_text;
+  background-color: @mt_surface;
+  border-radius: 4px;
+  font-family: Monospace;
+  font-size: 0.84em;
+}
+.command-block-clear { min-height: 0; padding: 1px 6px; color: @mt_muted; background: none; border: 0; box-shadow: none; }
+.command-block-clear:hover { color: @mt_text; background-color: @mt_raised; }
+
+/* Empty workspace */
+.welcome-title { color: @mt_text; font-size: 1.3em; font-weight: bold; }
+.welcome-copy { color: @mt_muted; }
 """
 
 
@@ -534,8 +360,8 @@ class MainWindow(
         self._attention_signature: Optional[tuple[str, ...]] = None
         self._sidebar_stats: Optional[tuple[int, int]] = None
         self.get_style_context().add_class("mujterm-window")
-        self.set_default_size(1180, 760)
-        self.set_size_request(760, 480)
+        self.set_default_size(1100, 700)
+        self.set_size_request(560, 360)
         self.connect("delete-event", self._delete_event)
         self._install_css()
         self.backend.reload_config()
@@ -561,56 +387,58 @@ class MainWindow(
         self._capture_executor.shutdown(wait=False, cancel_futures=True)
 
     def _build_header(self) -> None:
-        header = Gtk.HeaderBar(show_close_button=True)
-        header.get_style_context().add_class("mujterm-header")
+        header = Gtk.HeaderBar(show_close_button=True, title="MujTerm")
+        self.header_bar = header
         accelerator = Gtk.AccelGroup()
         self.add_accel_group(accelerator)
+        shortcut_mods = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
 
-        identity = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
-        mark = Gtk.Label(label=">_")
-        mark.get_style_context().add_class("brand-mark")
-        identity_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        title = Gtk.Label(label="MUJTERM", xalign=0)
-        title.get_style_context().add_class("brand-title")
-        subtitle = Gtk.Label(label="LOCAL SESSION MATRIX", xalign=0)
-        subtitle.get_style_context().add_class("brand-subtitle")
-        identity_copy.pack_start(title, False, False, 0)
-        identity_copy.pack_start(subtitle, False, False, 0)
-        identity.pack_start(mark, False, False, 0)
-        identity.pack_start(identity_copy, False, False, 0)
-        header.set_custom_title(identity)
+        def shortcut(key: int, callback: Callable[[], None]) -> None:
+            def activate(*_args: Any) -> bool:
+                callback()
+                return True
 
-        terminal_button = Gtk.Button.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON)
-        terminal_button.get_style_context().add_class("hud-button")
-        terminal_button.set_tooltip_text("New terminal (Ctrl+Shift+T)")
+            accelerator.connect(key, shortcut_mods, Gtk.AccelFlags.VISIBLE, activate)
+
+        def icon_button(
+            icon: str, tooltip: str, widget: type[Gtk.Button] = Gtk.Button
+        ) -> Gtk.Button:
+            button = widget()
+            button.add(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
+            button.set_tooltip_text(tooltip)
+            return button
+
+        terminal_button = icon_button(
+            "list-add-symbolic", "New terminal (Ctrl+Shift+T)"
+        )
         terminal_button.connect("clicked", lambda *_args: self.create_terminal_from_active())
-        split_right = Gtk.Button(label="▥")
-        split_right.get_style_context().add_class("hud-button")
-        split_right.get_style_context().add_class("split-button")
-        split_right.set_tooltip_text("Split right")
-        split_right.connect("clicked", lambda *_args: self.split_active(Gtk.Orientation.HORIZONTAL))
-        split_down = Gtk.Button(label="⬒")
-        split_down.get_style_context().add_class("hud-button")
-        split_down.get_style_context().add_class("split-button")
-        split_down.set_tooltip_text("Split down")
-        split_down.connect("clicked", lambda *_args: self.split_active(Gtk.Orientation.VERTICAL))
-        self.toolbox_button = Gtk.MenuButton(label="CMD")
-        self.toolbox_button.get_style_context().add_class("hud-button")
-        self.toolbox_button.set_tooltip_text("Command toolbox")
+
+        split_button = icon_button("view-dual-symbolic", "Split", Gtk.MenuButton)
+        split_menu = Gtk.Menu()
+        for label, key, orientation in (
+            ("Split Right", Gdk.KEY_Right, Gtk.Orientation.HORIZONTAL),
+            ("Split Down", Gdk.KEY_Down, Gtk.Orientation.VERTICAL),
+        ):
+            item = Gtk.MenuItem(label=label)
+            item.get_child().set_accel(key, shortcut_mods)
+            item.connect(
+                "activate",
+                lambda _item, value=orientation: self.split_active(value),
+            )
+            split_menu.append(item)
+        split_menu.show_all()
+        split_button.set_popup(split_menu)
+
+        self.toolbox_button = Gtk.MenuButton(label="Commands")
         self._build_toolbox_popover()
 
-        self.header_attention_button = Gtk.Button(label="ATTN")
-        self.header_attention_button.get_style_context().add_class("hud-button")
-        self.header_attention_button.set_sensitive(False)
-        self.header_attention_button.set_tooltip_text("No agent currently needs attention")
+        self.header_attention_button = Gtk.Button()
+        self.header_attention_button.set_no_show_all(True)
         self.header_attention_button.connect(
             "clicked", lambda *_args: self.select_next_attention()
         )
 
-        overflow_button = Gtk.MenuButton(label="⋯")
-        overflow_button.get_style_context().add_class("hud-button")
-        overflow_button.get_style_context().add_class("overflow-button")
-        overflow_button.set_tooltip_text("More actions")
+        overflow_button = icon_button("open-menu-symbolic", "Menu", Gtk.MenuButton)
         overflow = Gtk.Menu()
 
         def add_item(label: str, callback: Callable[[], None]) -> Gtk.MenuItem:
@@ -623,12 +451,10 @@ class MainWindow(
         add_item("New SSH Project…", self.open_ssh_project_dialog)
         overflow.append(Gtk.SeparatorMenuItem())
         search_item = add_item("Find in Terminal Output", self.show_terminal_search)
+        search_item.get_child().set_accel(Gdk.KEY_F, shortcut_mods)
         add_item("Find in Project Output…", self.show_project_search)
         overflow.append(Gtk.SeparatorMenuItem())
-        add_item("Project Timeline…", self.show_timeline)
-        add_item("Create Agent Handoff…", self.show_handoff)
         add_item("Codex ↔ Claude Races…", self.show_agent_races)
-        add_item("Service Dependency Map…", self.show_service_map)
         overflow.append(Gtk.SeparatorMenuItem())
         self.keyboard_mode_item = Gtk.CheckMenuItem(label="Keyboard Navigation Mode")
         self.keyboard_mode_item.set_tooltip_text("Toggle with Ctrl+Space")
@@ -643,33 +469,31 @@ class MainWindow(
         overflow_button.set_popup(overflow)
 
         header.pack_start(terminal_button)
-        header.pack_start(split_right)
-        header.pack_start(split_down)
+        header.pack_start(split_button)
         header.pack_start(self.toolbox_button)
         header.pack_end(overflow_button)
         header.pack_end(self.header_attention_button)
         self.set_titlebar(header)
-        terminal_button.add_accelerator("clicked", accelerator, Gdk.KEY_T, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
-        split_right.add_accelerator("clicked", accelerator, Gdk.KEY_Right, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
-        split_down.add_accelerator("clicked", accelerator, Gdk.KEY_Down, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
-        search_item.add_accelerator("activate", accelerator, Gdk.KEY_F, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, Gtk.AccelFlags.VISIBLE)
+        shortcut(Gdk.KEY_T, self.create_terminal_from_active)
+        shortcut(Gdk.KEY_Right, lambda: self.split_active(Gtk.Orientation.HORIZONTAL))
+        shortcut(Gdk.KEY_Down, lambda: self.split_active(Gtk.Orientation.VERTICAL))
+        shortcut(Gdk.KEY_F, self.show_terminal_search)
+        shortcut(Gdk.KEY_A, self.select_next_attention)
 
     def _build_toolbox_popover(self) -> None:
         self.toolbox_popover = Gtk.Popover.new(self.toolbox_button)
         self.toolbox_popover.set_position(Gtk.PositionType.BOTTOM)
-        self.toolbox_popover.set_size_request(390, -1)
+        self.toolbox_popover.set_size_request(360, -1)
         self.toolbox_popover.connect("show", self._toolbox_popover_shown)
 
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        content.set_border_width(12)
-        content.get_style_context().add_class("toolbox-popover")
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        content.set_border_width(10)
 
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        title = Gtk.Label(label="// COMMAND TOOLBOX", xalign=0)
+        title = Gtk.Label(label="Saved commands", xalign=0)
         title.get_style_context().add_class("toolbox-title")
-        header.pack_start(title, True, True, 0)
 
         self.toolbox_target = Gtk.Label(xalign=0)
+        self.toolbox_target.set_ellipsize(Pango.EllipsizeMode.END)
         self.toolbox_target.get_style_context().add_class("toolbox-target")
 
         scrolled = Gtk.ScrolledWindow()
@@ -680,17 +504,18 @@ class MainWindow(
         self.toolbox_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         scrolled.add(self.toolbox_list)
 
-        self.toolbox_add_button = Gtk.Button(label="+ ADD COMMAND")
-        self.toolbox_add_button.get_style_context().add_class("toolbox-add")
-        self.toolbox_add_button.set_tooltip_text("Save a command in the toolbox")
+        self.toolbox_add_button = Gtk.Button(label="Add Command…")
         self.toolbox_add_button.connect(
             "clicked", lambda *_args: self._show_toolbox_editor()
         )
 
-        content.pack_start(header, False, False, 0)
+        content.pack_start(title, False, False, 0)
         content.pack_start(self.toolbox_target, False, False, 0)
         content.pack_start(scrolled, True, True, 0)
         content.pack_start(self.toolbox_add_button, False, False, 0)
+        # Window.show_all() never reaches popovers, so their content has to be
+        # shown explicitly or the popover opens as an empty bubble.
+        content.show_all()
         self.toolbox_popover.add(content)
         self.toolbox_button.set_popover(self.toolbox_popover)
 
@@ -707,15 +532,23 @@ class MainWindow(
             else None
         )
         if terminal:
-            self.toolbox_target.set_text(f"TARGET // {terminal.name}")
+            self.toolbox_target.set_text(
+                f"Click a command to type it into {terminal.name}"
+            )
             self.toolbox_target.set_tooltip_text(terminal.last_cwd)
         else:
-            self.toolbox_target.set_text("TARGET // NO ACTIVE TERMINAL")
-            self.toolbox_target.set_tooltip_text("Select a terminal to insert commands")
+            self.toolbox_target.set_text("Select a terminal to insert commands")
+            self.toolbox_target.set_tooltip_text(None)
 
         commands = self.database.list_toolbox_commands()
         if not commands:
-            empty = Gtk.Label(label="No saved commands yet.", xalign=0)
+            empty = Gtk.Label(
+                label="No saved commands yet. Commands are typed at the prompt "
+                "without pressing Enter.",
+                xalign=0,
+            )
+            empty.set_line_wrap(True)
+            empty.set_max_width_chars(40)
             empty.get_style_context().add_class("toolbox-empty")
             self.toolbox_list.pack_start(empty, False, False, 0)
 
@@ -747,7 +580,8 @@ class MainWindow(
             edit = Gtk.Button.new_from_icon_name(
                 "document-edit-symbolic", Gtk.IconSize.MENU
             )
-            edit.get_style_context().add_class("terminal-row-action")
+            edit.set_relief(Gtk.ReliefStyle.NONE)
+            edit.set_valign(Gtk.Align.CENTER)
             edit.set_tooltip_text(f"Edit {item.name}")
             edit.connect(
                 "clicked",
@@ -756,8 +590,8 @@ class MainWindow(
             delete = Gtk.Button.new_from_icon_name(
                 "edit-delete-symbolic", Gtk.IconSize.MENU
             )
-            delete.get_style_context().add_class("terminal-row-action")
-            delete.get_style_context().add_class("terminal-row-close")
+            delete.set_relief(Gtk.ReliefStyle.NONE)
+            delete.set_valign(Gtk.Align.CENTER)
             delete.set_tooltip_text(f"Delete {item.name}")
             delete.connect(
                 "clicked",
@@ -799,16 +633,15 @@ class MainWindow(
         outer.get_style_context().add_class("mujterm-root")
         self.add(outer)
         self.banner = Gtk.InfoBar()
-        self.banner.get_style_context().add_class("mujterm-infobar")
         self.banner.set_message_type(Gtk.MessageType.INFO)
         self.banner_label = Gtk.Label(xalign=0)
+        self.banner_label.set_line_wrap(True)
         self.banner.get_content_area().add(self.banner_label)
         self.banner.add_button("Enable", Gtk.ResponseType.ACCEPT)
         self.banner.add_button("Not now", Gtk.ResponseType.CLOSE)
         self.banner.connect("response", self._banner_response)
         outer.pack_start(self.banner, False, False, 0)
         self.runtime_banner = Gtk.InfoBar()
-        self.runtime_banner.get_style_context().add_class("mujterm-runtime-error")
         self.runtime_banner.set_message_type(Gtk.MessageType.WARNING)
         self.runtime_banner_label = Gtk.Label(xalign=0)
         self.runtime_banner_label.set_ellipsize(Pango.EllipsizeMode.END)
@@ -822,35 +655,18 @@ class MainWindow(
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         outer.pack_start(paned, True, True, 0)
         sidebar_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        sidebar_shell.set_size_request(326, -1)
+        sidebar_shell.set_size_request(220, -1)
         sidebar_shell.get_style_context().add_class("mujterm-sidebar")
-        sidebar_hud = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        sidebar_hud.get_style_context().add_class("sidebar-hud")
-        kicker = Gtk.Label(label="// WORKSPACE NETWORK", xalign=0)
-        kicker.get_style_context().add_class("sidebar-kicker")
-        heading = Gtk.Label(label="Terminals", xalign=0)
-        heading.get_style_context().add_class("sidebar-title")
-        stats = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.session_count_label = Gtk.Label(label="00 SESSIONS", xalign=0)
-        self.agent_count_label = Gtk.Label(label="00 AGENTS", xalign=0)
-        self.session_count_label.get_style_context().add_class("sidebar-stat")
-        self.agent_count_label.get_style_context().add_class("sidebar-stat")
-        stats.pack_start(self.session_count_label, False, False, 0)
-        stats.pack_start(self.agent_count_label, False, False, 0)
-        sidebar_hud.pack_start(kicker, False, False, 0)
-        sidebar_hud.pack_start(heading, False, False, 0)
-        sidebar_hud.pack_start(stats, False, False, 4)
-        sidebar_shell.pack_start(sidebar_hud, False, False, 0)
         self.attention_revealer = Gtk.Revealer()
         self.attention_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
-        attention_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        attention_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         attention_panel.get_style_context().add_class("attention-panel")
         attention_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.attention_title = Gtk.Label(label="! ATTENTION", xalign=0)
+        self.attention_title = Gtk.Label(label="Waiting for input", xalign=0)
         self.attention_title.get_style_context().add_class("attention-title")
-        self.attention_next = Gtk.Button(label="NEXT")
-        self.attention_next.get_style_context().add_class("attention-item")
-        self.attention_next.set_tooltip_text("Jump to next terminal needing action (Ctrl+Shift+A)")
+        self.attention_next = Gtk.Button(label="Next")
+        self.attention_next.get_style_context().add_class("attention-next")
+        self.attention_next.set_tooltip_text("Jump to the next waiting terminal (Ctrl+Shift+A)")
         self.attention_next.connect("clicked", lambda *_args: self.select_next_attention())
         attention_header.pack_start(self.attention_title, True, True, 0)
         attention_header.pack_end(self.attention_next, False, False, 0)
@@ -865,46 +681,30 @@ class MainWindow(
         self.sidebar.set_selection_mode(Gtk.SelectionMode.NONE)
         sidebar_scroll.add(self.sidebar)
         sidebar_shell.pack_start(sidebar_scroll, True, True, 0)
-        footer = Gtk.Label(label="●  LOCAL LINK / TMUX CORE", xalign=0)
-        footer.get_style_context().add_class("sidebar-footer")
-        sidebar_shell.pack_end(footer, False, False, 0)
         paned.pack1(sidebar_shell, resize=False, shrink=False)
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=120)
         self.stack.get_style_context().add_class("mujterm-workspace")
         self.stack.add_named(self._welcome_widget(), "welcome")
         paned.pack2(self.stack, resize=True, shrink=False)
-        paned.set_position(326)
-        attention_accelerator = Gtk.AccelGroup()
-        self.add_accel_group(attention_accelerator)
-        self.attention_next.add_accelerator(
-            "clicked",
-            attention_accelerator,
-            Gdk.KEY_A,
-            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK,
-            Gtk.AccelFlags.VISIBLE,
-        )
+        paned.set_position(270)
 
     def _welcome_widget(self) -> Gtk.Widget:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_valign(Gtk.Align.CENTER)
         box.set_halign(Gtk.Align.CENTER)
-        glyph = Gtk.Label(label=">_")
-        glyph.get_style_context().add_class("welcome-glyph")
-        status = Gtk.Label(label="● SYSTEM READY")
-        status.get_style_context().add_class("welcome-status")
-        title = Gtk.Label(label="Command the workspace")
+        title = Gtk.Label(label="No terminals open")
         title.get_style_context().add_class("welcome-title")
-        copy = Gtk.Label(label="Persistent terminals. Live branches. Agent telemetry.")
+        copy = Gtk.Label(label="Open a project folder to start a terminal in it.")
+        copy.set_line_wrap(True)
+        copy.set_justify(Gtk.Justification.CENTER)
         copy.get_style_context().add_class("welcome-copy")
-        button = Gtk.Button(label="INITIALIZE PROJECT")
-        button.get_style_context().add_class("primary-action")
+        button = Gtk.Button(label="Open Project…")
+        button.get_style_context().add_class("suggested-action")
         button.set_halign(Gtk.Align.CENTER)
         button.connect("clicked", lambda *_args: self.open_project_dialog())
-        box.pack_start(glyph, False, False, 0)
-        box.pack_start(status, False, False, 0)
         box.pack_start(title, False, False, 0)
         box.pack_start(copy, False, False, 0)
-        box.pack_start(button, False, False, 8)
+        box.pack_start(button, False, False, 10)
         return box
 
     def _restore_sessions(self) -> None:
@@ -929,9 +729,6 @@ class MainWindow(
                     self._start_project_connection(terminal)
                 except TmuxError as exc:
                     record_runtime_error("SSH session restoration failed", exc)
-                    self._record_event(
-                        terminal, "terminal", f"SSH reconnect failed: {exc}"
-                    )
 
     def _recovery_cwd(self, terminal: TerminalSession) -> str:
         if Path(terminal.last_cwd).is_dir():
@@ -998,22 +795,15 @@ class MainWindow(
             else [t for t in self.database.list_terminals(project_id) if t.project_id == project_id]
         )
         terminal = self.database.create_terminal(project_id, f"Terminal {count + 1}", start_cwd)
-        connection: Optional[SshConnection] = None
         try:
             self.backend.create_session(terminal)
-            connection = self._start_project_connection(terminal)
+            self._start_project_connection(terminal)
         except TmuxError as exc:
             record_runtime_error("Terminal creation failed", exc)
             self.backend.kill_session(terminal.tmux_name)
             self.database.delete_terminal(terminal.id)
             self._error("Could not create terminal", str(exc))
             return None
-        summary = (
-            f"SSH terminal opened for {self._ssh_connection_label(connection)}"
-            if connection
-            else f"Created in {display_path(start_cwd)}"
-        )
-        self._record_event(terminal, "terminal", summary)
         self.rebuild_sidebar()
         if activate:
             self.select_terminal(terminal.id)
@@ -1081,8 +871,6 @@ class MainWindow(
         )
         if not terminal:
             return
-        direction = "right" if orientation == Gtk.Orientation.HORIZONTAL else "down"
-        self._record_event(terminal, "layout", f"Opened as split {direction}")
         self._split_with_terminal(terminal, orientation)
 
     def _split_with_terminal(
@@ -1311,7 +1099,6 @@ class MainWindow(
             if not self._confirm("Close running terminal?", "Its tmux session and running processes will be terminated."):
                 return
         self.backend.kill_session(terminal.tmux_name)
-        self._record_event(terminal, "terminal", "Closed terminal session")
         self.database.delete_terminal(terminal_id)
         remove_agent_state(terminal_id)
         self._remove_pane(terminal_id)
@@ -1480,7 +1267,6 @@ class MainWindow(
                 cpu_percent=snapshot.cpu_percent,
                 memory_bytes=snapshot.memory_bytes,
                 services=snapshot.services,
-                connected_ports=snapshot.connected_ports,
                 dead=True,
             )
             self._apply_snapshots(changed_ids={terminal_id})
@@ -1526,7 +1312,6 @@ class MainWindow(
         terminals = {
             terminal.id: terminal for terminal in self.database.list_terminals()
         }
-        self._record_snapshot_events(previous, snapshots, terminals)
         self.snapshots = snapshots
         cwd_updates = {
             terminal_id: snapshot.cwd
@@ -1563,7 +1348,6 @@ class MainWindow(
                 cpu_percent=snapshot.cpu_percent,
                 memory_bytes=snapshot.memory_bytes,
                 services=snapshot.services,
-                connected_ports=snapshot.connected_ports,
                 dead=snapshot.dead,
             )
         return snapshot
@@ -1595,59 +1379,6 @@ class MainWindow(
             self._update_sidebar_stats(len(terminals))
             self._update_attention_queue(terminals)
 
-    def _record_event(self, terminal: TerminalSession, kind: str, summary: str) -> None:
-        self.database.append_timeline_event(
-            terminal.project_id,
-            terminal.id,
-            terminal.name,
-            kind,
-            summary,
-            time.time(),
-        )
-
-    def _record_snapshot_events(
-        self,
-        previous: dict[str, TerminalSnapshot],
-        current: dict[str, TerminalSnapshot],
-        terminals: Optional[dict[str, TerminalSession]] = None,
-    ) -> None:
-        status_messages = {
-            AgentStatus.WORKING: "Agent started working",
-            AgentStatus.NEEDS_ACTION: "Agent needs your action",
-            AgentStatus.READY: "Agent finished and is ready",
-            AgentStatus.ERROR: "Agent stopped with an error",
-            AgentStatus.ENDED: "Terminal process ended",
-        }
-        if terminals is None:
-            terminals = {
-                terminal.id: terminal for terminal in self.database.list_terminals()
-            }
-        for terminal_id, snapshot in current.items():
-            before = previous.get(terminal_id)
-            terminal = terminals.get(terminal_id)
-            if not before or not terminal:
-                continue
-            if snapshot.branch and snapshot.branch != before.branch:
-                old_branch = before.branch or "no branch"
-                self._record_event(
-                    terminal,
-                    "git",
-                    f"Branch changed from {old_branch} to {snapshot.branch}",
-                )
-            if snapshot.status != before.status and snapshot.status in status_messages:
-                agent = snapshot.agent.value.title() if snapshot.agent else "Process"
-                self._record_event(
-                    terminal,
-                    "agent",
-                    f"{agent}: {status_messages[snapshot.status]}",
-                )
-            old_ports = {service.port for service in before.services}
-            new_ports = {service.port for service in snapshot.services}
-            for port in sorted(new_ports - old_ports):
-                self._record_event(terminal, "service", f"Started listening on localhost:{port}")
-            for port in sorted(old_ports - new_ports):
-                self._record_event(terminal, "service", f"Stopped listening on localhost:{port}")
-
     def _update_attention_queue(
         self,
         terminals: Optional[dict[str, TerminalSession]] = None,
@@ -1672,12 +1403,15 @@ class MainWindow(
         self._attention_ids = attention_ids
         for child in self.attention_items.get_children():
             self.attention_items.remove(child)
-        self.attention_title.set_text(f"! ATTENTION  {len(self._attention_ids)}")
+        self.attention_title.set_text(f"Waiting for input ({len(self._attention_ids)})")
         for terminal_id in self._attention_ids[:5]:
             terminal = terminals[terminal_id]
             project = self.database.get_project(terminal.project_id) if terminal.project_id else None
             prefix = f"{project.name} · " if project else ""
-            button = Gtk.Button(label=f"!  {prefix}{terminal.name}")
+            label = Gtk.Label(label=f"{prefix}{terminal.name}", xalign=0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            button = Gtk.Button()
+            button.add(label)
             button.set_halign(Gtk.Align.FILL)
             button.get_style_context().add_class("attention-item")
             button.connect(
@@ -1688,21 +1422,18 @@ class MainWindow(
         self.attention_items.show_all()
         self.attention_revealer.set_reveal_child(bool(self._attention_ids))
         count = len(self._attention_ids)
-        context = self.header_attention_button.get_style_context()
-        self.header_attention_button.set_sensitive(bool(count))
+        self.header_attention_button.get_style_context().add_class(
+            "attention-button-active"
+        )
         if count:
-            context.add_class("attention-button-active")
-            self.header_attention_button.set_label(f"! {count}")
+            self.header_attention_button.set_label(f"{count} waiting")
             self.header_attention_button.set_tooltip_text(
-                f"Jump to the next of {count} terminals needing attention "
+                f"Jump to the next of {count} terminals waiting for input "
                 "(Ctrl+Shift+A)"
             )
+            self.header_attention_button.show()
         else:
-            context.remove_class("attention-button-active")
-            self.header_attention_button.set_label("ATTN")
-            self.header_attention_button.set_tooltip_text(
-                "No agent currently needs attention"
-            )
+            self.header_attention_button.hide()
 
     def select_next_attention(self) -> None:
         if not getattr(self, "_attention_ids", None):
@@ -1721,8 +1452,10 @@ class MainWindow(
         if stats == self._sidebar_stats:
             return
         self._sidebar_stats = stats
-        self.session_count_label.set_text(f"{sessions:02d} SESSIONS")
-        self.agent_count_label.set_text(f"{agents:02d} AGENTS")
+        summary = f"{sessions} terminal{'s' if sessions != 1 else ''}"
+        if agents:
+            summary += f" · {agents} agent{'s' if agents != 1 else ''}"
+        self.header_bar.set_subtitle(summary if sessions else None)
 
     def _set_banner_visible(self, visible: bool) -> None:
         self.banner.set_no_show_all(not visible)

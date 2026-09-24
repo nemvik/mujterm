@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import signal
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -31,12 +29,15 @@ class WindowDialogsMixin:
         self, item: Optional[ToolboxCommand] = None
     ) -> None:
         self.toolbox_popover.popdown()
-        title = "Edit toolbox command" if item else "Add toolbox command"
+        title = "Edit Command" if item else "Add Command"
         dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
         dialog.add_buttons(
             "Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.ACCEPT
         )
         dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        dialog.get_widget_for_response(Gtk.ResponseType.ACCEPT).get_style_context().add_class(
+            "suggested-action"
+        )
         content = dialog.get_content_area()
         content.set_spacing(7)
         content.set_border_width(12)
@@ -297,57 +298,6 @@ class WindowDialogsMixin:
             record_runtime_error("Stopping local service failed", exc)
             self._error("Could not stop service", str(exc))
 
-    def show_timeline(self) -> None:
-        project = self.database.get_project(self.active_project_id) if self.active_project_id else None
-        events = self.database.list_timeline_events(project.id if project else None)
-        title = f"Timeline — {project.name}" if project else "Timeline — All Projects"
-        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
-        dialog.set_default_size(680, 520)
-        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-        content = dialog.get_content_area()
-        content.set_border_width(12)
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        timeline = Gtk.ListBox()
-        timeline.set_selection_mode(Gtk.SelectionMode.NONE)
-        row_terminals: dict[Gtk.ListBoxRow, Optional[str]] = {}
-        for event in events:
-            row = Gtk.ListBoxRow()
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            box.set_border_width(8)
-            kind = Gtk.Label(label=event.kind.upper(), xalign=0)
-            kind.get_style_context().add_class("timeline-kind")
-            summary = Gtk.Label(label=event.summary, xalign=0)
-            summary.set_line_wrap(True)
-            summary.get_style_context().add_class("timeline-summary")
-            stamp = datetime.fromtimestamp(event.created_at).strftime("%d.%m. %H:%M:%S")
-            meta = Gtk.Label(label=f"{stamp}  ·  {event.terminal_name}", xalign=0)
-            meta.get_style_context().add_class("timeline-meta")
-            box.pack_start(kind, False, False, 0)
-            box.pack_start(summary, False, False, 0)
-            box.pack_start(meta, False, False, 0)
-            row.add(box)
-            row_terminals[row] = event.terminal_id
-            timeline.add(row)
-        if not events:
-            timeline.add(Gtk.Label(label="No recorded events yet.", margin=24))
-        timeline.connect(
-            "row-activated",
-            lambda _list, row: self._timeline_row_activated(dialog, row_terminals.get(row)),
-        )
-        scrolled.add(timeline)
-        content.pack_start(scrolled, True, True, 0)
-        dialog.show_all()
-        dialog.run()
-        dialog.destroy()
-
-    def _timeline_row_activated(
-        self, dialog: Gtk.Dialog, terminal_id: Optional[str]
-    ) -> None:
-        if terminal_id and self.database.get_terminal(terminal_id):
-            dialog.response(Gtk.ResponseType.CLOSE)
-            self.select_terminal(terminal_id)
-
     def show_terminal_menu(self, terminal_id: str, event: Gdk.EventButton) -> None:
         menu = Gtk.Menu()
         duplicate = Gtk.MenuItem(label="Duplicate from Current Directory")
@@ -419,7 +369,6 @@ class WindowDialogsMixin:
         value = self._text_prompt("Rename Terminal", "Name", terminal.name)
         if value:
             self.database.rename_terminal(terminal_id, value)
-            self._record_event(terminal, "terminal", f"Renamed to {value}")
             self.rebuild_sidebar()
 
     def _rename_project(self, project_id: str) -> None:
@@ -429,14 +378,6 @@ class WindowDialogsMixin:
         value = self._text_prompt("Rename Project", "Name", project.name)
         if value:
             self.database.rename_project(project_id, value)
-            self.database.append_timeline_event(
-                project.id,
-                None,
-                value,
-                "project",
-                f"Renamed project from {project.name} to {value}",
-                time.time(),
-            )
             self.rebuild_sidebar()
 
     def _remove_project(self, project_id: str) -> None:

@@ -40,23 +40,21 @@ class TerminalRow(Gtk.ListBoxRow):
         self._last_services: Optional[tuple[ListeningService, ...]] = None
         self._last_status: Optional[tuple[AgentStatus, Optional[str]]] = None
         self.get_style_context().add_class("mujterm-terminal-row")
-        layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        click_target = Gtk.EventBox()
+        layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.click_target = click_target = Gtk.EventBox()
         click_target.set_visible_window(False)
         content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         self.title = Gtk.Label(label=session.name, xalign=0)
         self.title.set_ellipsize(Pango.EllipsizeMode.END)
+        self.title.get_style_context().add_class("terminal-row-title")
         self.metadata = Gtk.Label(label=display_path(session.last_cwd), xalign=0)
-        self.metadata.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        self.metadata.set_ellipsize(Pango.EllipsizeMode.END)
         self.metadata.get_style_context().add_class("mujterm-path")
-        self.resources = Gtk.Label(label="CPU 0.0%  ·  RAM 0 MiB", xalign=0)
-        self.resources.get_style_context().add_class("mujterm-resources")
         self.ports_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         text.pack_start(self.title, False, False, 0)
         text.pack_start(self.metadata, False, False, 0)
-        text.pack_start(self.resources, False, False, 0)
-        text.pack_start(self.ports_box, False, False, 1)
+        text.pack_start(self.ports_box, False, False, 2)
         content.pack_start(text, True, True, 0)
         self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         self.spinner = Gtk.Spinner()
@@ -72,19 +70,13 @@ class TerminalRow(Gtk.ListBoxRow):
         click_target.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [TERMINAL_TARGET], Gdk.DragAction.MOVE)
         click_target.connect("drag-data-get", self._drag_data_get)
         layout.pack_start(click_target, True, True, 0)
-        duplicate = Gtk.Button.new_from_icon_name("edit-copy-symbolic", Gtk.IconSize.MENU)
-        duplicate.set_relief(Gtk.ReliefStyle.NONE)
-        duplicate.get_style_context().add_class("terminal-row-action")
-        duplicate.set_tooltip_text("Duplicate from current directory")
-        duplicate.connect("clicked", lambda *_args: self.window.duplicate_terminal(self.session.id))
         close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
         close.set_relief(Gtk.ReliefStyle.NONE)
+        close.set_valign(Gtk.Align.CENTER)
         close.get_style_context().add_class("terminal-row-action")
-        close.get_style_context().add_class("terminal-row-close")
         close.set_tooltip_text("Close terminal")
         close.connect("clicked", lambda *_args: self.window.close_terminal(self.session.id))
         layout.pack_end(close, False, False, 0)
-        layout.pack_end(duplicate, False, False, 0)
         self.add(layout)
         self.drag_dest_set(Gtk.DestDefaults.ALL, [TERMINAL_TARGET], Gdk.DragAction.MOVE)
         self.connect("drag-data-received", self._drag_data_received)
@@ -111,15 +103,15 @@ class TerminalRow(Gtk.ListBoxRow):
             return
         metadata = display_path(snapshot.cwd)
         if snapshot.branch:
-            metadata += f"  ·  {snapshot.branch}"
+            metadata += f" · {snapshot.branch}"
         if metadata != self._last_metadata:
             self._last_metadata = metadata
             self.metadata.set_text(metadata)
-            self.metadata.set_tooltip_text(metadata)
         resources = resource_text(snapshot.cpu_percent, snapshot.memory_bytes)
-        if resources != self._last_resources:
-            self._last_resources = resources
-            self.resources.set_text(resources)
+        tooltip = f"{metadata}\n{resources}"
+        if tooltip != self._last_resources:
+            self._last_resources = tooltip
+            self.click_target.set_tooltip_text(tooltip)
         self._update_services(snapshot.services)
         self._set_status(snapshot.status, snapshot.agent.value.title() if snapshot.agent else None)
 
@@ -156,6 +148,8 @@ class TerminalRow(Gtk.ListBoxRow):
         self.spinner.hide()
         self.indicator.show()
         self.agent_label.set_text(agent or "")
+        # The status box starts hidden, so show_all() never reached this label.
+        self.agent_label.set_visible(bool(agent))
         if status == AgentStatus.SHELL and not agent:
             self.status_box.set_no_show_all(True)
             self.status_box.hide()
@@ -239,6 +233,7 @@ class ProjectSection(Gtk.Box):
         self.chevron = Gtk.Label(label="▾")
         self.chevron.get_style_context().add_class("project-chevron")
         title = Gtk.Label(label=project.name if project else "Ungrouped", xalign=0)
+        title.set_ellipsize(Pango.EllipsizeMode.END)
         title.get_style_context().add_class("mujterm-project-title")
         ssh_connection = (
             window.database.get_ssh_connection(project.id) if project else None
@@ -254,17 +249,10 @@ class ProjectSection(Gtk.Box):
         count.get_style_context().add_class("project-count")
         self.alert = Gtk.Label()
         self.alert.get_style_context().add_class("project-alert")
-        rename_button: Optional[Gtk.Button] = None
-        if project:
-            rename_button = Gtk.Button.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.MENU)
-            rename_button.set_relief(Gtk.ReliefStyle.NONE)
-            rename_button.get_style_context().add_class("terminal-row-action")
-            rename_button.set_tooltip_text("Rename project")
-            rename_button.connect("clicked", lambda *_args: self.window._rename_project(project.id))
         add_button = Gtk.Button.new_from_icon_name("list-add-symbolic", Gtk.IconSize.MENU)
         add_button.set_relief(Gtk.ReliefStyle.NONE)
-        add_button.get_style_context().add_class("hud-button")
-        add_button.set_tooltip_text("New terminal")
+        add_button.get_style_context().add_class("sidebar-action")
+        add_button.set_tooltip_text("New terminal in this project")
         add_button.connect("clicked", lambda *_args: self.window.create_terminal(self.project_id))
         header_box.pack_start(self.chevron, False, False, 0)
         header_box.pack_start(title, True, True, 0)
@@ -272,8 +260,6 @@ class ProjectSection(Gtk.Box):
             header_box.pack_start(ssh_badge, False, False, 0)
         header_box.pack_start(self.alert, False, False, 0)
         header_box.pack_start(count, False, False, 0)
-        if rename_button:
-            header_box.pack_start(rename_button, False, False, 0)
         header_box.pack_start(add_button, False, False, 0)
         self.header.add(header_box)
         self.header.connect("button-press-event", self._header_click)

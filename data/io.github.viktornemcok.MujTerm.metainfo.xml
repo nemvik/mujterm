@@ -17,6 +17,11 @@
     <binary>mujterm</binary>
   </provides>
   <releases>
+    <release version="0.1.6" date="2026-09-24">
+      <description>
+        <p>Lets the window shrink again, fixes adding saved commands, adopts a calmer native look, and removes the service map, agent handoff and project timeline.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-08-14">
       <description>
         <p>Suspends hidden VTE clients, bounds duplicate scrollback, and stops off-screen status animations.</p>

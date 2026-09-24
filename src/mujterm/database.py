@@ -12,7 +12,6 @@ from .models import (
     Project,
     SshConnection,
     TerminalSession,
-    TimelineEvent,
     ToolboxCommand,
 )
 from .paths import data_dir, ensure_private_dir
@@ -64,6 +63,8 @@ SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS toolbox_commands_position
     ON toolbox_commands(position)
     """,
+    # The project timeline feature has been removed. Its table stays part of
+    # the frozen v1 schema so existing databases keep opening in older releases.
     """
     CREATE TABLE IF NOT EXISTS timeline_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -544,64 +545,6 @@ class Database:
         )
         self.connection.commit()
         self._normalize_toolbox_positions()
-
-    def append_timeline_event(
-        self,
-        project_id: Optional[str],
-        terminal_id: Optional[str],
-        terminal_name: str,
-        kind: str,
-        summary: str,
-        created_at: float,
-    ) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO timeline_events(
-                project_id, terminal_id, terminal_name, kind, summary, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (project_id, terminal_id, terminal_name, kind, summary, created_at),
-        )
-        self.connection.execute(
-            """
-            DELETE FROM timeline_events
-            WHERE id NOT IN (
-                SELECT id FROM timeline_events ORDER BY created_at DESC LIMIT 2000
-            )
-            """
-        )
-        self.connection.commit()
-
-    def list_timeline_events(
-        self,
-        project_id: Optional[str] = None,
-        limit: int = 200,
-    ) -> list[TimelineEvent]:
-        if project_id is None:
-            rows = self.connection.execute(
-                "SELECT * FROM timeline_events ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = self.connection.execute(
-                """
-                SELECT * FROM timeline_events
-                WHERE project_id = ? ORDER BY created_at DESC LIMIT ?
-                """,
-                (project_id, limit),
-            ).fetchall()
-        return [
-            TimelineEvent(
-                id=row["id"],
-                project_id=row["project_id"],
-                terminal_id=row["terminal_id"],
-                terminal_name=row["terminal_name"],
-                kind=row["kind"],
-                summary=row["summary"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
 
     def create_agent_race(self, race: AgentRace) -> None:
         self.connection.execute(

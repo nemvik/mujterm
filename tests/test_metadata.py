@@ -57,11 +57,10 @@ class MetadataTests(unittest.TestCase):
             )
             snapshot = collect_snapshots(
                 {pane.terminal_id: pane},
-                {pane.pane_pid: (37.25, 96 * 1024 * 1024, (), (443,))},
+                {pane.pane_pid: (37.25, 96 * 1024 * 1024, ())},
             )[pane.terminal_id]
             self.assertEqual(snapshot.cpu_percent, 37.25)
             self.assertEqual(snapshot.memory_bytes, 96 * 1024 * 1024)
-            self.assertEqual(snapshot.connected_ports, (443,))
 
     def test_snapshot_uses_precomputed_agents_without_rescanning_proc(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -100,7 +99,7 @@ class MetadataTests(unittest.TestCase):
             listener.bind(("127.0.0.1", 0))
             listener.listen()
             port = listener.getsockname()[1]
-            _cpu, _memory, services, _connections = ProcessUsageSampler().sample([os.getpid()])[os.getpid()]
+            _cpu, _memory, services = ProcessUsageSampler().sample([os.getpid()])[os.getpid()]
             self.assertIn(port, {service.port for service in services})
         finally:
             listener.close()
@@ -114,9 +113,9 @@ class MetadataTests(unittest.TestCase):
         with patch.object(
             sampler, "_read_processes", return_value={10: process}
         ), patch.object(
-            sampler, "_socket_tables", return_value=({}, {})
+            sampler, "_socket_tables", return_value={}
         ) as socket_tables, patch.object(
-            sampler, "_network_for_tree", return_value=((), ())
+            sampler, "_network_for_tree", return_value=()
         ) as network_for_tree, patch.object(
             sampler, "_read_signatures", return_value={10: "bash"}
         ) as signatures, patch(

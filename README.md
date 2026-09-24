@@ -12,14 +12,11 @@ an isolated tmux server so terminal processes survive closing the window.
 - Nested horizontal and vertical split panes with draggable dividers.
 - Mouse-wheel scrollback in shells and full-screen Codex/Claude interfaces.
 - Exact OSC 133 command blocks with exit status, live output, Ghost Diff, and Impact Lens.
-- A quiet per-terminal radar for work, attention, completion, errors, resource pressure, and services.
+- A quiet per-terminal status dot for work, attention, completion, errors, resource pressure, and services.
 - Live current-directory and Git branch labels.
 - Live per-session CPU and resident-memory totals for the complete process tree.
 - Attention queue for agents waiting on input, with one-key navigation.
 - Local service radar with clickable listening ports and process controls.
-- Live dependency map inferred from TCP connections between terminal process trees.
-- Persistent project timeline for agent, Git, service, terminal, and layout events.
-- Privacy-conscious agent handoff cards with Git, service, resource, and activity context.
 - Codex ↔ Claude solution races on isolated Git branches and worktrees, with a comparison dashboard.
 - One-click terminal switching, duplication from the live working directory, and closing.
 - Drag-and-drop project and terminal organization.
@@ -50,7 +47,7 @@ tmux socket. It does not import, modify, or terminate unrelated tmux sessions.
 
 ## Agent status integration
 
-Open `⋯` → **Agent Integrations…** and choose **Enable**. MujTerm merges its
+Open the main menu (☰) → **Agent Integrations…** and choose **Enable**. MujTerm merges its
 handlers into the existing Claude Code and Codex hook configuration after making
 a timestamped backup. The handlers only become active for processes inheriting a
 `MUJTERM_TERMINAL_ID`, so agents launched in other terminals are ignored.
@@ -73,17 +70,14 @@ from the same integrations dialog without touching other hooks.
 
 Detected localhost ports appear below their terminal. Click a port to open it in
 the default browser; right-click to copy its URL or stop the owning process after
-confirmation. The active project's timeline is available from the `⋯` menu.
+confirmation.
 
-The agent handoff action creates a reviewable context card and can launch either
-agent in a new terminal. Handoffs, the timeline, service map, SSH projects, and
-agent integration controls are available from the `⋯` menu. The agent race action
-gives Codex and Claude the same task in separate
-Git worktrees, opens them side by side, and keeps their diff/resource comparison
-available afterward. Worktrees are stored below MujTerm's XDG data directory;
-MujTerm does not automatically delete race branches or worktrees containing work.
-The network button shows dependencies inferred from live TCP connections. It
-does not inspect payloads or terminal output.
+SSH projects, agent races, and agent integration controls are available from
+the main menu. The agent race action gives Codex and Claude the same task in
+separate Git worktrees, opens them side by side, and keeps their diff/resource
+comparison available afterward. Worktrees are stored below MujTerm's XDG data
+directory; MujTerm does not automatically delete race branches or worktrees
+containing work.
 
 Drag with the left mouse button to select terminal text; releasing the button
 copies it to the desktop clipboard. Keep dragging at the top or bottom edge to
@@ -93,11 +87,11 @@ again. Hold Shift while dragging to use VTE's local selection instead. Right-cli
 a detected web address to open or copy it.
 
 Press `Ctrl+Shift+F` to open the active terminal's search bar. Enter and
-Shift+Enter move between highlighted matches. Select **PROJECT** in that bar to
+Shift+Enter move between highlighted matches. Select **All Terminals…** in that bar to
 search the complete tmux history of every session in the active project; choosing
 a result focuses that terminal and carries the query back into its search bar.
 
-Select **BLOCKS** in a terminal HUD to open its semantic command history. New
+Select **Blocks** in a terminal header to open its semantic command history. New
 local Bash, Zsh, and Fish sessions emit standard OSC 133 boundaries and send the
 exact command, working directory, and exit status over MujTerm's private Unix
 socket. Existing sessions and remote SSH shells continue to use bounded
@@ -107,18 +101,19 @@ command adds a Ghost Diff with added and removed lines.
 Each expanded block includes an **Impact Lens**. It compares bounded Git status
 metadata before and after the command, records branch and commit transitions,
 new or closed listening ports, peak CPU, and resident-memory growth. It never
-stores file contents. Click a block to expand it, or choose **CLEAR** to forget
+stores file contents. Click a block to expand it, or choose **Clear** to forget
 the in-memory history. Commands, output, and impact metadata in this panel are
 never persisted to disk. MujTerm sources the normal user Bash/Zsh configuration
 through a private generated wrapper; it does not edit shell dotfiles.
 
-The small dot and subtle terminal border form the quiet radar: cyan means work
-is running, amber needs attention, green has just completed, pink marks an error
-or ended terminal, magenta signals high CPU/RAM pressure, and blue indicates a
-listening local service. Hover the dot for the current reason.
+The small dot in each terminal header shows its state: blue means work is
+running, amber needs attention, green has just completed, red marks an error or
+ended terminal, violet signals high CPU/RAM pressure, and teal indicates a
+listening local service. Hover the dot for the current reason. The header text
+of the focused pane is brighter than the others.
 
-Select **CMD** in the header to open the command toolbox, then choose
-**+ ADD COMMAND**. Add a name and a single-line command, then click the saved
+Select **Commands** in the header bar to open the saved commands, then choose
+**Add Command…**. Add a name and a single-line command, then click the saved
 item to insert its text into the active terminal. Toolbox clicks never press
 Enter, so the command remains editable at the prompt until you run it yourself.
 Saved commands are available across all projects and are stored as plain text in
@@ -155,7 +150,7 @@ working agents use a static indicator.
 The GTK window orchestration and shared styling live in `src/mujterm/ui.py`.
 Terminal rendering and VTE lifecycle are isolated in `terminal_view.py`, sidebar
 widgets in `sidebar.py`, search in `search.py`, dialogs and menus in `dialogs.py`,
-and agent handoff/race tools in `agent_tools.py`. The original public imports from
+and agent race tools in `agent_tools.py`. The original public imports from
 `mujterm.ui` remain available for compatibility.
 
 ## Diagnostics and state safety
@@ -185,5 +180,5 @@ make deb
 The compatibility smoke test drives a real isolated tmux client and verifies
 that `htop` receives both F10 and its clickable Quit control.
 
-The Debian package is written to `dist/mujterm_0.1.5_all.deb`. To rebuild,
+The Debian package is written to `dist/mujterm_0.1.6_all.deb`. To rebuild,
 verify, and reinstall the current source in one step, run `make reinstall`.

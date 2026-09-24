@@ -38,6 +38,23 @@ PCRE2_UTF = 0x00080000
 URL_PATTERN = r"(?:https?://|www\.)[^\s<>\[\]{}\"']+"
 VTE_SCROLLBACK_LINES = 10_000
 HIDDEN_TERMINAL_SUSPEND_DELAY_MS = 1_500
+DEFAULT_TERMINAL_FONT = "Monospace 11"
+
+# Terminal palette; the stylesheet in ui.py reuses the same colours so status
+# accents in the chrome match what programs print in the terminal.
+BACKGROUND = "#1c1f25"
+FOREGROUND = "#dde1e7"
+MUTED = "#8b919b"
+RED = "#e06c75"
+GREEN = "#98c379"
+YELLOW = "#e5c07b"
+BLUE = "#61afef"
+MAGENTA = "#c678dd"
+CYAN = "#56b6c2"
+ANSI_PALETTE = (
+    "#2a2e36", RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, "#c8ccd4",
+    "#5c6370", "#ef8b92", "#b5d99c", "#f0d197", "#8cc4f5", "#d7a1e7", "#7fcfd8", "#f2f4f7",
+)
 
 
 def display_path(path: str) -> str:
@@ -51,7 +68,7 @@ def display_path(path: str) -> str:
 
 def resource_text(cpu_percent: float, memory_bytes: int) -> str:
     memory_mib = memory_bytes / (1024 * 1024)
-    return f"CPU {cpu_percent:.1f}%  ·  RAM {memory_mib:.0f} MiB"
+    return f"CPU {cpu_percent:.0f}% · RAM {memory_mib:.0f} MiB"
 
 
 def normalized_url(value: str) -> str:
@@ -359,7 +376,7 @@ class TerminalView(Gtk.Box):
         self.terminal.set_scroll_on_keystroke(True)
         self.terminal.set_mouse_autohide(True)
         self.terminal.set_allow_hyperlink(True)
-        self.terminal.set_font(Pango.FontDescription("Monospace 11"))
+        self.terminal.set_font(self._terminal_font())
         self._apply_terminal_palette()
         self._configure_url_matching()
         self.terminal.connect("event", self._on_pointer_event)
@@ -367,6 +384,7 @@ class TerminalView(Gtk.Box):
         self.terminal.connect("key-press-event", self._on_key_press)
         self.terminal.connect("button-press-event", self._on_pointer_input)
         self.terminal.connect("focus-in-event", self._on_focus_in)
+        self.terminal.connect("focus-out-event", self._on_focus_out)
         self.terminal.connect("child-exited", self._child_exited)
         self.terminal_shell.pack_start(self.terminal, True, True, 0)
         self.pack_start(self.terminal_shell, True, True, 0)
@@ -382,7 +400,8 @@ class TerminalView(Gtk.Box):
         bar.connect("size-allocate", self._search_size_allocate)
 
         self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_placeholder_text("Find in terminal output")
+        self.search_entry.set_placeholder_text("Find in terminal")
+        self.search_entry.set_width_chars(10)
         self.search_entry.get_style_context().add_class("terminal-search-entry")
         self.search_entry.connect("changed", self._search_changed)
         self.search_entry.connect("key-press-event", self._search_key_press)
@@ -392,16 +411,16 @@ class TerminalView(Gtk.Box):
         self.search_case.set_tooltip_text("Match case")
         self.search_case.connect("toggled", self._search_changed)
 
-        previous = Gtk.Button(label="↑")
+        previous = Gtk.Button.new_from_icon_name("go-up-symbolic", Gtk.IconSize.MENU)
         previous.get_style_context().add_class("terminal-search-button")
         previous.set_tooltip_text("Previous match (Shift+Enter)")
         previous.connect("clicked", lambda *_args: self._find_search_match(False))
-        next_button = Gtk.Button(label="↓")
+        next_button = Gtk.Button.new_from_icon_name("go-down-symbolic", Gtk.IconSize.MENU)
         next_button.get_style_context().add_class("terminal-search-button")
         next_button.set_tooltip_text("Next match (Enter)")
         next_button.connect("clicked", lambda *_args: self._find_search_match(True))
 
-        self.search_project = Gtk.Button(label="PROJECT")
+        self.search_project = Gtk.Button(label="All Terminals…")
         self.search_project.get_style_context().add_class("terminal-search-button")
         self.search_project.set_tooltip_text(
             "Search output from every session in this project"
@@ -414,6 +433,7 @@ class TerminalView(Gtk.Box):
         )
 
         self.search_status = Gtk.Label(label="", xalign=0)
+        self.search_status.set_ellipsize(Pango.EllipsizeMode.END)
         self.search_status.get_style_context().add_class("terminal-search-status")
 
         close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
@@ -428,6 +448,10 @@ class TerminalView(Gtk.Box):
         bar.pack_start(self.search_project, False, False, 0)
         bar.pack_start(self.search_status, False, False, 4)
         bar.pack_end(close, False, False, 0)
+        # Optional controls start hidden and appear once the bar is wide
+        # enough, so the hidden bar never inflates the pane's minimum width.
+        for widget in (self.search_status, self.search_project, self.search_case):
+            self._set_responsive_visibility(widget, False)
         self.search_revealer.add(bar)
         self.pack_start(self.search_revealer, False, False, 0)
 
@@ -461,7 +485,7 @@ class TerminalView(Gtk.Box):
         if not regex:
             self._set_search_status("")
             return
-        self._set_search_status("" if self.terminal.search_find_next() else "NO MATCH")
+        self._set_search_status("" if self.terminal.search_find_next() else "No matches")
 
     def _find_search_match(self, forward: bool) -> bool:
         if not self.search_entry.get_text():
@@ -472,7 +496,7 @@ class TerminalView(Gtk.Box):
             if forward
             else self.terminal.search_find_previous()
         )
-        self._set_search_status("" if found else "NO MATCH")
+        self._set_search_status("" if found else "No matches")
         return found
 
     def _set_search_status(self, text: str) -> None:
@@ -503,13 +527,12 @@ class TerminalView(Gtk.Box):
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         panel.get_style_context().add_class("command-blocks")
         heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
-        title = Gtk.Label(label="COMMAND BLOCKS // EPHEMERAL", xalign=0)
+        title = Gtk.Label(label="Command blocks", xalign=0)
         title.get_style_context().add_class("command-blocks-title")
-        note = Gtk.Label(
-            label="OSC 133 exact · memory only · never written to disk", xalign=0
-        )
+        note = Gtk.Label(label="Kept in memory only, never saved to disk", xalign=0)
+        note.set_ellipsize(Pango.EllipsizeMode.END)
         note.get_style_context().add_class("command-blocks-note")
-        clear = Gtk.Button(label="CLEAR")
+        clear = Gtk.Button(label="Clear")
         clear.get_style_context().add_class("command-block-clear")
         clear.connect("clicked", self._clear_command_blocks)
         heading.pack_start(title, False, False, 0)
@@ -563,7 +586,8 @@ class TerminalView(Gtk.Box):
         self._render_command_blocks()
 
     def _render_command_blocks(self) -> None:
-        count_label = f"BLOCKS {len(self.command_blocks)}"
+        count = len(self.command_blocks)
+        count_label = f"Blocks {count}" if count else "Blocks"
         if self.command_blocks_button.get_label() != count_label:
             self.command_blocks_button.set_label(count_label)
         if not self.command_blocks_button.get_active():
@@ -583,7 +607,7 @@ class TerminalView(Gtk.Box):
         self._rendered_command_block_ids = block_ids
         if not self.command_blocks:
             empty = Gtk.Label(
-                label="Run a shell command to create the first semantic block.",
+                label="Run a command in this shell and it will appear here.",
                 xalign=0,
             )
             empty.get_style_context().add_class("command-blocks-note")
@@ -680,63 +704,66 @@ class TerminalView(Gtk.Box):
     @staticmethod
     def _command_block_meta(block: SemanticCommandBlock) -> str:
         duration = block.duration
-        source = "OSC" if block.exact else "EST"
         if block.running:
-            return f"{source} · RUNNING {duration:.1f}s"
+            return f"running {duration:.1f}s"
         if block.exit_code is not None:
-            return f"{source} · EXIT {block.exit_code} · {duration:.1f}s"
-        return f"{source} · {duration:.1f}s"
+            return f"exit {block.exit_code} · {duration:.1f}s"
+        return f"{duration:.1f}s"
 
     @staticmethod
     def _command_block_badge(block: SemanticCommandBlock) -> str:
         if block.running:
-            return "LIVE"
+            return ""
         impact_count = len(block.git_impact.changed_files)
-        impact = f" · IMPACT {impact_count}" if impact_count else ""
+        impact = (
+            f"{impact_count} file{'s' if impact_count != 1 else ''} changed"
+            if impact_count
+            else ""
+        )
         if block.previous_output is None:
-            return f"FIRST RUN{impact}"
-        if not block.added_lines and not block.removed_lines:
-            return f"NO CHANGE{impact}"
-        return f"Δ +{block.added_lines} −{block.removed_lines}{impact}"
+            output = ""
+        elif not block.added_lines and not block.removed_lines:
+            output = "same output"
+        else:
+            output = f"+{block.added_lines} −{block.removed_lines} lines"
+        return " · ".join(part for part in (output, impact) if part)
 
     @staticmethod
     def _command_block_markup(block: SemanticCommandBlock) -> str:
         if block.running:
-            heading = "LIVE OUTPUT"
+            heading = "Live output"
             content = block.output or "(waiting for output)"
         elif block.previous_output is not None:
-            heading = "GHOST DIFF // PREVIOUS → CURRENT"
+            heading = "Output compared with the previous run"
             content = block.diff_text
         else:
-            heading = "OUTPUT"
+            heading = "Output"
             content = block.output or "(no output)"
         lines = content.splitlines()
         clipped = len(lines) > 160
         if clipped:
             lines = lines[-160:]
         rendered = [TerminalView._command_impact_markup(block), ""]
-        rendered.append(f'<span foreground="#a5f3fc"><b>{heading}</b></span>')
+        rendered.append(f"<b>{heading}</b>")
         if block.truncated or clipped:
             rendered.append(
-                '<span foreground="#818aa3">… earlier output omitted …</span>'
+                f'<span foreground="{MUTED}">… earlier output omitted …</span>'
             )
         for line in lines:
             escaped = GLib.markup_escape_text(line)
             if line.startswith(("---", "+++", "@@")):
-                rendered.append(f'<span foreground="#93c5fd">{escaped}</span>')
+                rendered.append(f'<span foreground="{BLUE}">{escaped}</span>')
             elif line.startswith("+"):
-                rendered.append(f'<span foreground="#86efac">{escaped}</span>')
+                rendered.append(f'<span foreground="{GREEN}">{escaped}</span>')
             elif line.startswith("-"):
-                rendered.append(f'<span foreground="#fda4af">{escaped}</span>')
+                rendered.append(f'<span foreground="{RED}">{escaped}</span>')
             else:
                 rendered.append(escaped or " ")
         return "\n".join(rendered)
 
     @staticmethod
     def _command_impact_markup(block: SemanticCommandBlock) -> str:
-        rendered = [
-            '<span foreground="#f0abfc"><b>IMPACT LENS</b></span>'
-        ]
+        rendered = ["<b>What changed</b>"]
         protocol = f"exact OSC 133 · {block.shell or 'shell'}" if block.exact else "estimated"
         facts = [protocol]
         if block.exit_code is not None:
@@ -745,11 +772,11 @@ class TerminalView(Gtk.Box):
         if location:
             facts.append(location)
         rendered.append(
-            f'<span foreground="#9ca3b8">{GLib.markup_escape_text(" · ".join(facts))}</span>'
+            f'<span foreground="{MUTED}">{GLib.markup_escape_text(" · ".join(facts))}</span>'
         )
         if block.running or not block.impact_ready:
             rendered.append(
-                '<span foreground="#818aa3">measuring Git, services and resources…</span>'
+                f'<span foreground="{MUTED}">measuring Git, services and resources…</span>'
             )
             return "\n".join(rendered)
 
@@ -759,7 +786,7 @@ class TerminalView(Gtk.Box):
             before = impact.repository_before or "no repository"
             after = impact.repository_after or "no repository"
             rendered.append(
-                '<span foreground="#93c5fd">repository  '
+                f'<span foreground="{BLUE}">repository  '
                 f'{GLib.markup_escape_text(before)} → {GLib.markup_escape_text(after)}</span>'
             )
             observations += 1
@@ -767,22 +794,22 @@ class TerminalView(Gtk.Box):
             before = impact.branch_before or "detached/none"
             after = impact.branch_after or "detached/none"
             rendered.append(
-                '<span foreground="#93c5fd">branch      '
+                f'<span foreground="{BLUE}">branch      '
                 f'{GLib.markup_escape_text(before)} → {GLib.markup_escape_text(after)}</span>'
             )
             observations += 1
         if impact.commit_changed:
             rendered.append(
-                '<span foreground="#c4b5fd">commit      '
+                f'<span foreground="{MAGENTA}">commit      '
                 f'{impact.head_before[:8]} → {impact.head_after[:8]}</span>'
             )
             observations += 1
 
         file_groups = (
-            ("+", "#86efac", impact.created),
-            ("~", "#fde68a", impact.modified),
-            ("−", "#fda4af", impact.deleted),
-            ("✓", "#93c5fd", impact.resolved),
+            ("+", GREEN, impact.created),
+            ("~", YELLOW, impact.modified),
+            ("−", RED, impact.deleted),
+            ("✓", BLUE, impact.resolved),
         )
         shown = 0
         for glyph, color, paths in file_groups:
@@ -798,19 +825,19 @@ class TerminalView(Gtk.Box):
         if omitted > 0 or impact.truncated:
             suffix = f"{omitted} more" if omitted > 0 else "additional files"
             rendered.append(
-                f'<span foreground="#818aa3">… {suffix} omitted …</span>'
+                f'<span foreground="{MUTED}">… {suffix} omitted …</span>'
             )
 
         if block.opened_ports:
             ports = " ".join(f":{port}" for port in block.opened_ports)
             rendered.append(
-                f'<span foreground="#86efac">ports open  {ports}</span>'
+                f'<span foreground="{GREEN}">ports open  {ports}</span>'
             )
             observations += len(block.opened_ports)
         if block.closed_ports:
             ports = " ".join(f":{port}" for port in block.closed_ports)
             rendered.append(
-                f'<span foreground="#fda4af">ports close {ports}</span>'
+                f'<span foreground="{RED}">ports close {ports}</span>'
             )
             observations += len(block.closed_ports)
 
@@ -822,12 +849,12 @@ class TerminalView(Gtk.Box):
             resource_parts.append(f"RAM +{memory_delta / (1024 ** 2):.0f} MiB")
         if resource_parts:
             rendered.append(
-                f'<span foreground="#f0abfc">resources   {" · ".join(resource_parts)}</span>'
+                f'<span foreground="{MAGENTA}">resources   {" · ".join(resource_parts)}</span>'
             )
             observations += 1
         if not observations:
             rendered.append(
-                '<span foreground="#818aa3">no observable Git, service or resource change</span>'
+                f'<span foreground="{MUTED}">no observable Git, service or resource change</span>'
             )
         return "\n".join(rendered)
 
@@ -1235,40 +1262,38 @@ class TerminalView(Gtk.Box):
         return False
 
     def _build_hud(self) -> None:
-        hud = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        hud = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         hud.get_style_context().add_class("terminal-hud")
         hud.connect("size-allocate", self._hud_size_allocate)
-        identity = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.hud_title = Gtk.Label(label=self.session.name, xalign=0)
-        self.hud_title.set_ellipsize(Pango.EllipsizeMode.END)
-        self.hud_title.get_style_context().add_class("terminal-hud-title")
-        self.hud_path = Gtk.Label(label=display_path(self.session.last_cwd), xalign=0)
-        self.hud_path.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        self.hud_path.get_style_context().add_class("terminal-hud-path")
-        identity.pack_start(self.hud_title, False, False, 0)
-        identity.pack_start(self.hud_path, False, False, 0)
-        self.hud_branch = Gtk.Label(label="NO REPOSITORY")
-        self.hud_branch.get_style_context().add_class("terminal-hud-chip")
-        self.hud_resources = Gtk.Label(label="CPU 0.0%  ·  RAM 0 MiB")
-        self.hud_resources.get_style_context().add_class("terminal-hud-chip")
-        self.hud_services = Gtk.Label(label="NO SERVICES")
-        self.hud_services.get_style_context().add_class("terminal-hud-chip")
-        self.hud_agent = Gtk.Label()
-        self.hud_agent.get_style_context().add_class("status-shell")
-        self.hud_agent.set_no_show_all(True)
-        self.command_blocks_button = Gtk.ToggleButton(label="BLOCKS 0")
-        self.command_blocks_button.get_style_context().add_class(
-            "command-block-toggle"
-        )
-        self.command_blocks_button.set_tooltip_text(
-            "Exact OSC 133 command blocks, Ghost Diff and Impact Lens"
-        )
-        self.command_blocks_button.connect("toggled", self._toggle_command_blocks)
         self.radar_indicator = Gtk.Label(label="●")
         self.radar_indicator.get_style_context().add_class("radar-indicator")
-        self.radar_indicator.set_tooltip_text("Quiet radar: idle")
-        hud.pack_start(identity, True, True, 0)
-        hud.pack_end(self.radar_indicator, False, False, 0)
+        self.radar_indicator.set_tooltip_text("Idle")
+        self.hud_title = Gtk.Label(label=self.session.name, xalign=0)
+        self.hud_title.set_ellipsize(Pango.EllipsizeMode.END)
+        self.hud_title.set_max_width_chars(28)
+        self.hud_title.get_style_context().add_class("terminal-hud-title")
+        self.hud_path = Gtk.Label(label=display_path(self.session.last_cwd), xalign=0)
+        self.hud_path.set_ellipsize(Pango.EllipsizeMode.START)
+        self.hud_path.get_style_context().add_class("terminal-hud-path")
+        self.hud_branch = self._hud_label("terminal-hud-branch", 24)
+        self.hud_services = self._hud_label("terminal-hud-services", 18)
+        self.hud_resources = self._hud_label("terminal-hud-resources", 18)
+        self.hud_agent = self._hud_label("status-shell", 22)
+        # Agent state is the most important fact in the header; the path and
+        # branch give way first.
+        self.hud_agent.set_ellipsize(Pango.EllipsizeMode.NONE)
+        self.command_blocks_button = Gtk.ToggleButton(label="Blocks")
+        self.command_blocks_button.set_valign(Gtk.Align.CENTER)
+        self.command_blocks_button.get_style_context().add_class(
+            "terminal-hud-button"
+        )
+        self.command_blocks_button.set_tooltip_text(
+            "Recent commands with exit status, output diff and changed files"
+        )
+        self.command_blocks_button.connect("toggled", self._toggle_command_blocks)
+        hud.pack_start(self.radar_indicator, False, False, 0)
+        hud.pack_start(self.hud_title, False, False, 0)
+        hud.pack_start(self.hud_path, True, True, 0)
         hud.pack_end(self.command_blocks_button, False, False, 0)
         hud.pack_end(self.hud_agent, False, False, 0)
         hud.pack_end(self.hud_resources, False, False, 0)
@@ -1276,10 +1301,26 @@ class TerminalView(Gtk.Box):
         hud.pack_end(self.hud_branch, False, False, 0)
         self.pack_start(hud, False, False, 0)
 
+    @staticmethod
+    def _hud_label(css_class: str, max_chars: int) -> Gtk.Label:
+        # Ellipsizing labels request almost no minimum width, so a long branch
+        # or port list can never force the window wider than the screen.
+        label = Gtk.Label()
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_max_width_chars(max_chars)
+        label.get_style_context().add_class(css_class)
+        label.set_no_show_all(True)
+        return label
+
     def _hud_size_allocate(self, _hud: Gtk.Widget, allocation: Gdk.Rectangle) -> None:
-        self._set_responsive_visibility(self.hud_branch, allocation.width >= 760)
-        self._set_responsive_visibility(self.hud_services, allocation.width >= 660)
-        self._set_responsive_visibility(self.hud_resources, allocation.width >= 500)
+        width = allocation.width
+        self._set_hud_label_visible(self.hud_resources, width >= 720)
+        self._set_hud_label_visible(self.hud_services, width >= 600)
+        self._set_hud_label_visible(self.hud_branch, width >= 540)
+        self._set_responsive_visibility(self.hud_path, width >= 480)
+
+    def _set_hud_label_visible(self, label: Gtk.Label, wide_enough: bool) -> None:
+        self._set_responsive_visibility(label, wide_enough and bool(label.get_text()))
 
     @staticmethod
     def _set_responsive_visibility(widget: Gtk.Widget, visible: bool) -> None:
@@ -1296,13 +1337,13 @@ class TerminalView(Gtk.Box):
         if self._radar_completion_active and state in ("idle", "service"):
             state = "error" if self._radar_completion_error else "ready"
         descriptions = {
-            "idle": "idle",
-            "working": "command or agent running",
-            "attention": "agent needs input",
-            "ready": "command or agent completed",
-            "error": "agent or terminal ended with an error",
-            "hot": "high CPU or memory pressure",
-            "service": "local service is listening",
+            "idle": "Idle",
+            "working": "A command or agent is running",
+            "attention": "An agent is waiting for your input",
+            "ready": "The command or agent has finished",
+            "error": "The agent or terminal ended with an error",
+            "hot": "High CPU or memory use",
+            "service": "A local service is listening",
         }
         detail = descriptions[state]
         snapshot = self._last_snapshot
@@ -1314,7 +1355,7 @@ class TerminalView(Gtk.Box):
         elif state == "service" and snapshot:
             ports = ", ".join(str(service.port) for service in snapshot.services)
             detail += f" · {ports}"
-        tooltip = f"Quiet radar: {detail}"
+        tooltip = detail
         if state != self._radar_state:
             self._radar_state = state
             class_name = f"radar-{state}"
@@ -1382,17 +1423,28 @@ class TerminalView(Gtk.Box):
             self.hud_path.set_text(path)
         if self.hud_path.get_tooltip_text() != snapshot.cwd:
             self.hud_path.set_tooltip_text(snapshot.cwd)
-        branch = f"GIT // {snapshot.branch}" if snapshot.branch else "NO REPOSITORY"
-        if self.hud_branch.get_text() != branch:
-            self.hud_branch.set_text(branch)
+        branch = f"⎇ {snapshot.branch}" if snapshot.branch else ""
+        self._set_hud_text(self.hud_branch, branch, snapshot.branch)
         resources = resource_text(snapshot.cpu_percent, snapshot.memory_bytes)
-        if self.hud_resources.get_text() != resources:
-            self.hud_resources.set_text(resources)
+        self._set_hud_text(self.hud_resources, resources)
         ports = " ".join(f":{service.port}" for service in snapshot.services)
-        services = f"PORTS // {ports}" if ports else "NO SERVICES"
-        if self.hud_services.get_text() != services:
-            self.hud_services.set_text(services)
+        self._set_hud_text(
+            self.hud_services, ports, "Listening on localhost " + ports if ports else None
+        )
         self._update_hud_agent(snapshot)
+
+    def _set_hud_text(
+        self, label: Gtk.Label, text: str, tooltip: Optional[str] = None
+    ) -> None:
+        if label.get_text() == text:
+            return
+        label.set_text(text)
+        label.set_tooltip_text(tooltip or text or None)
+        if not text:
+            self._set_responsive_visibility(label, False)
+        elif label.get_parent() is not None:
+            # Re-evaluate the width thresholds now that there is content.
+            label.get_parent().queue_resize()
 
     def _update_hud_agent(
         self, snapshot: Optional[TerminalSnapshot]
@@ -1404,50 +1456,55 @@ class TerminalView(Gtk.Box):
         if snapshot is None or (
             snapshot.status == AgentStatus.SHELL and not snapshot.agent
         ):
-            self.hud_agent.set_no_show_all(True)
-            self.hud_agent.hide()
+            self.hud_agent.set_text("")
+            self._set_responsive_visibility(self.hud_agent, False)
             return
         context = self.hud_agent.get_style_context()
         for class_name in ("status-working", "status-action", "status-ready", "status-error", "status-shell"):
             context.remove_class(class_name)
-        agent = snapshot.agent.value.upper() if snapshot.agent else "SHELL"
-        self.hud_agent.set_no_show_all(False)
-        self.hud_agent.show()
+        agent = snapshot.agent.value.title() if snapshot.agent else "Shell"
         if snapshot.status == AgentStatus.WORKING:
             context.add_class("status-working")
-            text = f"{agent} // RUNNING"
+            text = f"◌ {agent} working"
         elif snapshot.status == AgentStatus.NEEDS_ACTION:
             context.add_class("status-action")
-            text = f"{agent} // ACTION REQUIRED"
+            text = f"! {agent} needs input"
         elif snapshot.status == AgentStatus.READY:
             context.add_class("status-ready")
-            text = f"{agent} // READY"
+            text = f"● {agent} ready"
         elif snapshot.status in (AgentStatus.ERROR, AgentStatus.ENDED):
             context.add_class("status-error")
-            text = f"{agent} // {'ENDED' if snapshot.status == AgentStatus.ENDED else 'ERROR'}"
+            text = f"× {agent} {'ended' if snapshot.status == AgentStatus.ENDED else 'failed'}"
         elif snapshot.status == AgentStatus.UNKNOWN:
             context.add_class("status-working")
-            text = f"{agent} // LINKING"
+            text = f"◌ {agent} connecting"
         else:
             context.add_class("status-shell")
-            text = "SHELL // STANDBY"
+            text = agent
         self.hud_agent.set_text(text)
+        self.hud_agent.set_tooltip_text(text)
+        self._set_responsive_visibility(self.hud_agent, True)
 
     def _apply_terminal_palette(self) -> None:
-        foreground = self._color("#f1f5f9")
-        background = self._color("#080b14")
-        palette = [
-            self._color(value)
-            for value in (
-                "#151a2b", "#fb7185", "#86efac", "#fde68a",
-                "#93c5fd", "#c4b5fd", "#67e8f9", "#e5e7eb",
-                "#64748b", "#fda4af", "#bbf7d0", "#fef3c7",
-                "#bfdbfe", "#e9d5ff", "#a5f3fc", "#ffffff",
-            )
-        ]
-        self.terminal.set_colors(foreground, background, palette)
-        self.terminal.set_color_cursor(self._color("#f0abfc"))
-        self.terminal.set_color_highlight(self._color("#3a315d"))
+        palette = [self._color(value) for value in ANSI_PALETTE]
+        self.terminal.set_colors(
+            self._color(FOREGROUND), self._color(BACKGROUND), palette
+        )
+        self.terminal.set_color_cursor(self._color(FOREGROUND))
+        self.terminal.set_color_cursor_foreground(self._color(BACKGROUND))
+        self.terminal.set_color_highlight(self._color("#34465e"))
+        self.terminal.set_color_highlight_foreground(self._color(FOREGROUND))
+
+    @staticmethod
+    def _terminal_font() -> Pango.FontDescription:
+        """Use the desktop's monospace font, like other GNOME terminals."""
+        source = Gio.SettingsSchemaSource.get_default()
+        schema = "org.gnome.desktop.interface"
+        if source is not None and source.lookup(schema, True) is not None:
+            name = Gio.Settings.new(schema).get_string("monospace-font-name")
+            if name:
+                return Pango.FontDescription(name)
+        return Pango.FontDescription(DEFAULT_TERMINAL_FONT)
 
     def _configure_url_matching(self) -> None:
         flags = PCRE2_UTF | PCRE2_UCP | PCRE2_CASELESS | PCRE2_MULTILINE
@@ -1844,5 +1901,10 @@ class TerminalView(Gtk.Box):
         clipboard.store()
 
     def _on_focus_in(self, *_args: Any) -> bool:
+        self.get_style_context().add_class("focused")
         self.on_focus(self.session.id)
+        return False
+
+    def _on_focus_out(self, *_args: Any) -> bool:
+        self.get_style_context().remove_class("focused")
         return False

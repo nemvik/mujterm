@@ -232,21 +232,6 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one line"):
             self.database.create_toolbox_command("Two commands", "pwd\nls")
 
-    def test_timeline_events_are_persisted_and_filtered_by_project(self) -> None:
-        first = self.database.create_project("First", "/tmp/first")
-        second = self.database.create_project("Second", "/tmp/second")
-        terminal = self.database.create_terminal(first.id, "API", "/tmp/first")
-        self.database.append_timeline_event(
-            first.id, terminal.id, terminal.name, "service", "Started :3000", time.time()
-        )
-        self.database.append_timeline_event(
-            second.id, None, "Second", "project", "Renamed", time.time() + 1
-        )
-        events = self.database.list_timeline_events(first.id)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].terminal_id, terminal.id)
-        self.assertEqual(events[0].summary, "Started :3000")
-
     def test_agent_race_round_trip(self) -> None:
         project = self.database.create_project("Race", "/tmp/race")
         race = AgentRace(

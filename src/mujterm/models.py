@@ -89,17 +89,6 @@ class ListeningService:
 
 
 @dataclass(frozen=True)
-class TimelineEvent:
-    id: int
-    project_id: Optional[str]
-    terminal_id: Optional[str]
-    terminal_name: str
-    kind: str
-    summary: str
-    created_at: float
-
-
-@dataclass(frozen=True)
 class AgentRace:
     id: str
     project_id: str
@@ -126,5 +115,4 @@ class TerminalSnapshot:
     cpu_percent: float = 0.0
     memory_bytes: int = 0
     services: tuple[ListeningService, ...] = ()
-    connected_ports: tuple[int, ...] = ()
     dead: bool = False
