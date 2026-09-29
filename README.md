@@ -12,7 +12,9 @@ an isolated tmux server so terminal processes survive closing the window.
 - Nested horizontal and vertical split panes with draggable dividers.
 - Mouse-wheel scrollback in shells and full-screen Codex/Claude interfaces.
 - Exact OSC 133 command blocks with exit status, live output, Ghost Diff, and Impact Lens.
-- A quiet per-terminal status dot for work, attention, completion, errors, resource pressure, and services.
+- Status pills that name each terminal's state in words: working, needs input, ready, failed, ended, and high load.
+- Header-bar counts of agents per state; click a count to jump to the next terminal in that state.
+- A one-minute CPU sparkline beside every terminal in the sidebar.
 - Live current-directory and Git branch labels.
 - Live per-session CPU and resident-memory totals for the complete process tree.
 - Attention queue for agents waiting on input, with one-key navigation.
@@ -34,7 +36,7 @@ Ubuntu 22.04 already provides the runtime packages used by this project. On a
 fresh Debian or Ubuntu installation, install them with:
 
 ```sh
-sudo apt install python3 python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 tmux git openssh-client
+sudo apt install python3 python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-vte-2.91 tmux git openssh-client
 ```
 
 Then run:
@@ -113,11 +115,18 @@ the in-memory history. Commands, output, and impact metadata in this panel are
 never persisted to disk. MujTerm sources the normal user Bash/Zsh configuration
 through a private generated wrapper; it does not edit shell dotfiles.
 
-The small dot in each terminal header shows its state: blue means work is
-running, amber needs attention, green has just completed, red marks an error or
-ended terminal, violet signals high CPU/RAM pressure, and teal indicates a
-listening local service. Hover the dot for the current reason. The header text
-of the focused pane is brighter than the others.
+Each terminal header and sidebar row shows its state as a pill: blue while an
+agent or command is working, solid amber when an agent needs your input, green
+when it is ready or a command has just finished, red when an agent failed or the
+terminal ended, and violet for high CPU/RAM pressure. Hover a pill for the
+current reason. Idle shells show no pill. The header of the focused pane is
+brighter than the others.
+
+The header bar counts agents in each state. Click a count to cycle through the
+terminals in that state; the amber count does the same as `Ctrl+Shift+A`. Empty
+states are hidden. Each sidebar row also draws the terminal's CPU use over the
+last minute, coloured while an agent works or the load is high. The row shows
+the folder relative to its project; hover it for the full path and memory use.
 
 Select **Commands** in the header bar to open the saved commands, then choose
 **Add Command…**. Add a name and a single-line command, then click the saved
@@ -126,9 +135,9 @@ Enter, so the command remains editable at the prompt until you run it yourself.
 Saved commands are available across all projects and are stored as plain text in
 MujTerm's local state database.
 
-Select **SSH** in the header to create a persistent VPS project. Enter a project
-name, an SSH target such as `root@example.com` (or an alias from
-`~/.ssh/config`), and an optional port. The first terminal connects immediately,
+Select **SSH project** at the bottom of the sidebar to create a persistent VPS
+project. Enter a project name, an SSH target such as `root@example.com` (or an
+alias from `~/.ssh/config`), and an optional port. The first terminal connects immediately,
 and every new, duplicated, split, restored, or restarted terminal in that project
 uses the same connection. Host-key and password prompts appear normally inside
 the terminal; MujTerm never stores passwords or private keys.

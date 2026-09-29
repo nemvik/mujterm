@@ -6,7 +6,7 @@ import signal
 import unittest
 from types import SimpleNamespace
 from types import MethodType
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import gi
 
@@ -107,10 +107,15 @@ class TerminalViewTests(unittest.TestCase):
             snapshots={terminal.id: before},
             database=database,
             _apply_snapshots=Mock(),
+            _record_cpu_history=Mock(),
             report_runtime_error=Mock(),
         )
 
         self.assertFalse(MainWindow._snapshot_done(window, future))
+
+        window._record_cpu_history.assert_called_once_with(
+            {terminal.id: after}, ANY
+        )
 
         database.list_terminals.assert_called_once_with()
         database.update_terminal_cwds.assert_called_once_with(
@@ -153,6 +158,7 @@ class TerminalViewTests(unittest.TestCase):
             project_sections=[section],
             _update_sidebar_stats=Mock(),
             _update_attention_queue=Mock(),
+            _update_state_buttons=Mock(),
         )
         window._effective_snapshot = MethodType(
             MainWindow._effective_snapshot, window

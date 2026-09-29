@@ -3,7 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import gi
 
@@ -32,6 +32,13 @@ from .models import (
 )
 from .search import SearchMixin, literal_search_regex, output_match_summary
 from .sidebar import PROJECT_TARGET, TERMINAL_TARGET, ProjectSection, TerminalRow
+from .status_display import (
+    STATE_BUTTON_TOOLTIPS,
+    STATUS_GROUPS,
+    CpuHistory,
+    group_by_status,
+    state_button_label,
+)
 from .tmux_backend import TmuxBackend, TmuxError
 from .terminal_view import (
     CommandStartContext,
@@ -107,20 +114,62 @@ CSS = b"""
    colours are the terminal's own ANSI colours, surfaces are flat graphite. */
 @define-color mt_sidebar #17191e;
 @define-color mt_surface #1c1f25;
-@define-color mt_raised #262a31;
-@define-color mt_hover #21242a;
+@define-color mt_raised #272b33;
+@define-color mt_hover #21242b;
 @define-color mt_line #2b2f37;
-@define-color mt_text #dde1e7;
-@define-color mt_muted #8b919b;
-@define-color mt_faint #5d636d;
+@define-color mt_text #e1e4ea;
+@define-color mt_muted #9aa1ac;
+@define-color mt_faint #717885;
+@define-color mt_dim #5d636d;
 @define-color mt_blue #61afef;
 @define-color mt_yellow #e5c07b;
 @define-color mt_green #98c379;
 @define-color mt_red #e06c75;
 @define-color mt_cyan #56b6c2;
 @define-color mt_magenta #c678dd;
+@define-color mt_on_yellow #1f1a10;
 
 .mujterm-root { background-color: @mt_surface; }
+
+/* Status pills: one vocabulary for sidebar rows and pane headers. Every
+   state also carries a word and usually a glyph, never colour alone. */
+.status-pill {
+  min-height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.82em;
+  font-weight: 500;
+}
+.status-pill spinner { min-width: 10px; min-height: 10px; }
+/* Themes recolour labels in selected list rows; pills keep their own colour. */
+.status-pill label, .status-pill spinner, .state-button label { color: inherit; }
+.status-pill.pill-working { color: @mt_blue; background-color: alpha(@mt_blue, 0.15); }
+.status-pill.pill-action { color: @mt_on_yellow; background-color: @mt_yellow; font-weight: bold; }
+.status-pill.pill-ready { color: @mt_green; }
+.status-pill.pill-error { color: @mt_red; }
+.status-pill.pill-hot { color: @mt_magenta; }
+.status-pill.pill-shell { color: @mt_muted; }
+
+/* Header bar: one button per agent-state group. */
+.state-button {
+  min-height: 0;
+  padding: 3px 11px;
+  border: 0;
+  border-radius: 999px;
+  background-image: none;
+  box-shadow: none;
+  text-shadow: none;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+.state-button.state-action { color: @mt_on_yellow; background-color: @mt_yellow; font-weight: bold; }
+.state-button.state-action:hover { background-color: shade(@mt_yellow, 1.08); }
+.state-button.state-working { color: @mt_blue; background-color: alpha(@mt_blue, 0.15); }
+.state-button.state-working:hover { background-color: alpha(@mt_blue, 0.24); }
+.state-button.state-ready { color: @mt_green; background-color: alpha(@mt_green, 0.12); }
+.state-button.state-ready:hover { background-color: alpha(@mt_green, 0.2); }
+.state-button.state-failed, .state-button.state-ended { color: @mt_red; background-color: alpha(@mt_red, 0.12); }
+.state-button.state-failed:hover, .state-button.state-ended:hover { background-color: alpha(@mt_red, 0.2); }
 
 /* Sidebar */
 .mujterm-sidebar {
@@ -135,17 +184,17 @@ CSS = b"""
   background-image: none;
   box-shadow: none;
 }
-.mujterm-project-header { padding: 14px 10px 4px 14px; }
-.mujterm-project-title { color: @mt_muted; font-weight: bold; font-size: 0.86em; }
+.mujterm-project-header { padding: 16px 10px 6px 14px; }
+.mujterm-project-title { color: @mt_text; font-weight: 500; }
 .project-chevron { color: @mt_faint; font-size: 0.8em; }
-.project-count { color: @mt_faint; font-size: 0.82em; }
-.project-alert { color: @mt_yellow; font-weight: bold; font-size: 0.82em; }
+.project-count { color: @mt_faint; font-size: 0.88em; }
+.project-alert { color: @mt_yellow; font-weight: bold; font-size: 0.88em; }
 .project-ssh {
   color: @mt_muted;
-  border: 1px solid @mt_line;
+  border: 1px solid #363b45;
   border-radius: 4px;
   padding: 0 4px;
-  font-size: 0.72em;
+  font-size: 0.78em;
 }
 .sidebar-action {
   min-width: 22px;
@@ -157,19 +206,23 @@ CSS = b"""
   box-shadow: none;
 }
 .sidebar-action:hover { color: @mt_text; background-color: @mt_raised; }
+/* Rows are indented so their names line up under the project name. */
 .mujterm-terminal-row {
   color: @mt_text;
-  border-radius: 6px;
-  padding: 6px 6px 6px 10px;
+  border-radius: 8px;
+  padding: 7px 2px 7px 21px;
   margin: 1px 6px;
 }
 .mujterm-sidebar row.mujterm-terminal-row:hover { background-color: @mt_hover; }
-.mujterm-sidebar row.mujterm-terminal-row.active {
-  background-color: @mt_raised;
-  box-shadow: inset 2px 0 @mt_blue;
-}
-.terminal-row-title { color: @mt_text; }
-.mujterm-path { color: @mt_muted; font-size: 0.84em; }
+.mujterm-sidebar row.mujterm-terminal-row.active { background-color: @mt_raised; }
+.terminal-row-title { color: @mt_text; font-weight: 500; }
+.mujterm-path { color: @mt_muted; font-size: 0.88em; }
+.terminal-row-branch { color: @mt_faint; font-size: 0.88em; }
+.terminal-row-cpu { color: @mt_muted; font-size: 0.82em; font-feature-settings: "tnum"; }
+.terminal-row-cpu.hot { color: @mt_magenta; }
+.cpu-sparkline.spark-working { color: @mt_blue; }
+.cpu-sparkline.spark-hot { color: @mt_magenta; }
+.cpu-sparkline.spark-idle { color: @mt_dim; }
 .terminal-row-action {
   min-width: 22px;
   min-height: 22px;
@@ -180,47 +233,73 @@ CSS = b"""
   box-shadow: none;
   opacity: 0;
 }
-.mujterm-terminal-row:hover .terminal-row-action,
-.mujterm-terminal-row.active .terminal-row-action { opacity: 1; }
+.mujterm-terminal-row:hover .terminal-row-action { opacity: 1; }
 .terminal-row-action:hover { color: @mt_red; background-color: alpha(@mt_red, 0.12); }
 .port-chip {
   min-height: 0;
-  padding: 0 5px;
+  padding: 0 6px;
   color: @mt_cyan;
   background: none;
-  border: 1px solid alpha(@mt_cyan, 0.35);
-  border-radius: 4px;
+  border: 1px solid alpha(@mt_cyan, 0.4);
+  border-radius: 5px;
   box-shadow: none;
-  font-size: 0.78em;
+  font-size: 0.82em;
 }
 .port-chip:hover { background-color: alpha(@mt_cyan, 0.12); }
+
+/* Attention queue: a card above the projects while an agent waits. */
 .attention-panel {
-  padding: 8px 8px 10px 14px;
-  border-bottom: 1px solid @mt_line;
+  margin: 10px 10px 2px 10px;
+  padding: 8px 6px 6px 10px;
+  border-radius: 10px;
+  background-color: alpha(@mt_yellow, 0.07);
+  border: 1px solid alpha(@mt_yellow, 0.22);
 }
-.attention-title { color: @mt_yellow; font-weight: bold; font-size: 0.86em; }
+.attention-title { color: @mt_yellow; font-weight: bold; font-size: 0.9em; }
 .attention-next, .attention-item {
   min-height: 0;
-  padding: 3px 6px;
+  padding: 4px 6px;
   color: @mt_text;
   background: none;
   border: 0;
+  border-radius: 7px;
   box-shadow: none;
-  font-size: 0.88em;
 }
-.attention-next { color: @mt_yellow; }
-.attention-next:hover, .attention-item:hover { background-color: @mt_raised; }
+.attention-next { color: @mt_yellow; font-size: 0.9em; }
+.attention-next:hover, .attention-item:hover { background-color: alpha(@mt_yellow, 0.1); }
+.attention-glyph {
+  min-width: 16px;
+  min-height: 16px;
+  border-radius: 999px;
+  color: #1c1f25;
+  background-color: @mt_yellow;
+  font-size: 0.8em;
+  font-weight: bold;
+}
+.attention-name { font-weight: 500; }
+.attention-project { color: @mt_muted; font-size: 0.92em; }
+.keycap {
+  padding: 0 4px;
+  color: @mt_muted;
+  border: 1px solid #3a3f49;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  font-weight: normal;
+}
 
-/* Status text uses colour plus a distinct glyph, never colour alone. */
-.status-working { color: @mt_blue; }
-.status-action { color: @mt_yellow; font-weight: bold; }
-.status-ready { color: @mt_green; }
-.status-error { color: @mt_red; }
-.status-shell { color: @mt_muted; }
-.status-working, .status-action, .status-ready, .status-error, .status-shell { font-size: 0.86em; }
-
-/* Header bar: the theme draws it; only the attention button is tinted. */
-.attention-button-active { color: @mt_yellow; font-weight: bold; }
+.sidebar-footer { padding: 6px; border-top: 1px solid @mt_line; }
+.sidebar-footer-button {
+  min-height: 28px;
+  padding: 0 10px;
+  color: @mt_muted;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  font-size: 0.94em;
+}
+.sidebar-footer-button:hover { color: @mt_text; background-color: @mt_raised; }
 
 /* Command toolbox */
 .toolbox-title { font-weight: bold; }
@@ -236,36 +315,30 @@ CSS = b"""
 /* Terminal pane */
 .terminal-view, .terminal-shell, .mujterm-workspace { background-color: @mt_surface; }
 .terminal-hud {
-  min-height: 30px;
-  padding: 3px 8px 3px 12px;
+  min-height: 34px;
+  padding: 0 8px 0 14px;
   color: @mt_muted;
   background-color: @mt_surface;
   border-bottom: 1px solid @mt_line;
 }
+.terminal-view.focused .terminal-hud { background-color: #21252c; }
 .terminal-hud-title { color: @mt_muted; font-weight: bold; }
 .terminal-view.focused .terminal-hud-title { color: @mt_text; }
 .terminal-hud-path { color: @mt_faint; }
 .terminal-hud-branch { color: @mt_magenta; }
 .terminal-hud-services { color: @mt_cyan; }
 .terminal-hud-resources { color: @mt_faint; font-feature-settings: "tnum"; }
-.terminal-hud-path, .terminal-hud-branch, .terminal-hud-services, .terminal-hud-resources { font-size: 0.86em; }
+.terminal-hud-path, .terminal-hud-branch, .terminal-hud-services, .terminal-hud-resources { font-size: 0.9em; }
 .terminal-shell { padding: 6px 4px 4px 10px; }
-.radar-indicator { color: @mt_faint; font-size: 0.8em; }
-.radar-indicator.radar-working { color: @mt_blue; }
-.radar-indicator.radar-attention { color: @mt_yellow; }
-.radar-indicator.radar-ready { color: @mt_green; }
-.radar-indicator.radar-error { color: @mt_red; }
-.radar-indicator.radar-hot { color: @mt_magenta; }
-.radar-indicator.radar-service { color: @mt_cyan; }
 .terminal-hud-button {
-  min-height: 22px;
-  padding: 0 8px;
+  min-height: 24px;
+  padding: 0 9px;
   color: @mt_muted;
   background: none;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   box-shadow: none;
-  font-size: 0.86em;
+  font-size: 0.9em;
 }
 .terminal-hud-button:hover { color: @mt_text; background-color: @mt_raised; }
 .terminal-hud-button:checked { color: @mt_text; background-color: @mt_raised; }
@@ -370,6 +443,8 @@ class MainWindow(
         self._last_runtime_warning_at = 0.0
         self._status_overrides: dict[str, AgentStatus] = {}
         self._attention_ids: list[str] = []
+        self._state_ids: dict[str, tuple[str, ...]] = {}
+        self._cpu_history = CpuHistory()
         self._attention_signature: Optional[tuple[str, ...]] = None
         # Terminals already waiting when a snapshot arrives; None until the
         # first snapshot so agents waiting at startup are not announced.
@@ -451,11 +526,29 @@ class MainWindow(
         self.toolbox_button = Gtk.MenuButton(label="Commands")
         self._build_toolbox_popover()
 
-        self.header_attention_button = Gtk.Button()
-        self.header_attention_button.set_no_show_all(True)
-        self.header_attention_button.connect(
-            "clicked", lambda *_args: self.select_next_attention()
+        # One button per agent-state group, most urgent first; empty groups
+        # stay hidden so a quiet workspace has a quiet header.
+        state_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        state_buttons.set_valign(Gtk.Align.CENTER)
+        self.header_state_buttons: dict[str, Gtk.Button] = {}
+        for key, _members in STATUS_GROUPS:
+            button = Gtk.Button()
+            button.set_no_show_all(True)
+            button.set_valign(Gtk.Align.CENTER)
+            button.set_tooltip_text(STATE_BUTTON_TOOLTIPS[key])
+            context = button.get_style_context()
+            context.add_class("state-button")
+            context.add_class(f"state-{key}")
+            button.connect(
+                "clicked", lambda _button, value=key: self.select_next_in_state(value)
+            )
+            self.header_state_buttons[key] = button
+            state_buttons.pack_start(button, False, False, 0)
+
+        search_button = icon_button(
+            "edit-find-symbolic", "Find in terminal output (Ctrl+Shift+F)"
         )
+        search_button.connect("clicked", lambda *_args: self.show_terminal_search())
 
         overflow_button = icon_button("open-menu-symbolic", "Menu", Gtk.MenuButton)
         overflow = Gtk.Menu()
@@ -491,7 +584,8 @@ class MainWindow(
         header.pack_start(split_button)
         header.pack_start(self.toolbox_button)
         header.pack_end(overflow_button)
-        header.pack_end(self.header_attention_button)
+        header.pack_end(search_button)
+        header.pack_end(state_buttons)
         self.set_titlebar(header)
         shortcut(Gdk.KEY_T, self.create_terminal_from_active)
         shortcut(Gdk.KEY_Right, lambda: self.split_active(Gtk.Orientation.HORIZONTAL))
@@ -681,9 +775,15 @@ class MainWindow(
         attention_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         attention_panel.get_style_context().add_class("attention-panel")
         attention_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.attention_title = Gtk.Label(label="Waiting for input", xalign=0)
+        self.attention_title = Gtk.Label(label="Needs your input", xalign=0)
         self.attention_title.get_style_context().add_class("attention-title")
-        self.attention_next = Gtk.Button(label="Next")
+        self.attention_next = Gtk.Button()
+        next_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        next_content.pack_start(Gtk.Label(label="Next"), False, False, 0)
+        next_keys = Gtk.Label(label="Ctrl+Shift+A")
+        next_keys.get_style_context().add_class("keycap")
+        next_content.pack_start(next_keys, False, False, 0)
+        self.attention_next.add(next_content)
         self.attention_next.get_style_context().add_class("attention-next")
         self.attention_next.set_tooltip_text("Jump to the next waiting terminal (Ctrl+Shift+A)")
         self.attention_next.connect("clicked", lambda *_args: self.select_next_attention())
@@ -700,12 +800,34 @@ class MainWindow(
         self.sidebar.set_selection_mode(Gtk.SelectionMode.NONE)
         sidebar_scroll.add(self.sidebar)
         sidebar_shell.pack_start(sidebar_scroll, True, True, 0)
+        sidebar_shell.pack_start(self._sidebar_footer(), False, False, 0)
         paned.pack1(sidebar_shell, resize=False, shrink=False)
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=120)
         self.stack.get_style_context().add_class("mujterm-workspace")
         self.stack.add_named(self._welcome_widget(), "welcome")
         paned.pack2(self.stack, resize=True, shrink=False)
-        paned.set_position(270)
+        paned.set_position(296)
+
+    def _sidebar_footer(self) -> Gtk.Widget:
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        footer.get_style_context().add_class("sidebar-footer")
+        for icon, label, tooltip, callback in (
+            ("folder-new-symbolic", "Open project", "Open a project folder", self.open_project_dialog),
+            ("network-server-symbolic", "SSH project", "Add a persistent SSH project", self.open_ssh_project_dialog),
+        ):
+            content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            content.pack_start(
+                Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0
+            )
+            content.pack_start(Gtk.Label(label=label), False, False, 0)
+            button = Gtk.Button()
+            button.add(content)
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            button.set_tooltip_text(tooltip)
+            button.get_style_context().add_class("sidebar-footer-button")
+            button.connect("clicked", lambda _button, action=callback: action())
+            footer.pack_start(button, False, False, 0)
+        return footer
 
     def _welcome_widget(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1342,6 +1464,7 @@ class MainWindow(
             and snapshot.cwd != terminals[terminal_id].last_cwd
         }
         self.database.update_terminal_cwds(cwd_updates)
+        self._record_cpu_history(snapshots, time.monotonic())
         self._apply_snapshots(
             changed_ids={
                 terminal_id
@@ -1399,6 +1522,43 @@ class MainWindow(
                 section.update_summary(self.snapshots)
             self._update_sidebar_stats(len(terminals))
             self._update_attention_queue(terminals)
+            self._update_state_buttons(terminals)
+
+    def _record_cpu_history(
+        self, snapshots: dict[str, TerminalSnapshot], now: float
+    ) -> None:
+        for terminal_id, snapshot in snapshots.items():
+            self._cpu_history.add(terminal_id, now, snapshot.cpu_percent)
+        self._cpu_history.retain(snapshots)
+        # Every row redraws, not only changed ones: an idle terminal's old
+        # activity still has to scroll out of its sparkline.
+        for terminal_id, row in self.terminal_rows.items():
+            row.update_cpu_history(self._cpu_history.samples(terminal_id), now)
+
+    def _update_state_buttons(self, terminal_ids: Iterable[str]) -> None:
+        statuses = {
+            terminal_id: self._status_overrides.get(
+                terminal_id, self.snapshots[terminal_id].status
+            )
+            for terminal_id in terminal_ids
+            if terminal_id in self.snapshots
+        }
+        for key, ids in group_by_status(statuses):
+            self._state_ids[key] = ids
+            button = self.header_state_buttons[key]
+            if ids:
+                button.set_label(state_button_label(key, len(ids)))
+            button.set_visible(bool(ids))
+
+    def select_next_in_state(self, key: str) -> None:
+        ids = self._state_ids.get(key, ())
+        if not ids:
+            return
+        try:
+            index = ids.index(self.active_terminal_id)
+        except ValueError:
+            index = -1
+        self.select_terminal(ids[(index + 1) % len(ids)])
 
     def _update_attention_queue(
         self,
@@ -1425,15 +1585,24 @@ class MainWindow(
         self._attention_ids = attention_ids
         for child in self.attention_items.get_children():
             self.attention_items.remove(child)
-        self.attention_title.set_text(f"Waiting for input ({len(self._attention_ids)})")
         for terminal_id in self._attention_ids[:5]:
             terminal = terminals[terminal_id]
             project = self.database.get_project(terminal.project_id) if terminal.project_id else None
-            prefix = f"{project.name} · " if project else ""
-            label = Gtk.Label(label=f"{prefix}{terminal.name}", xalign=0)
-            label.set_ellipsize(Pango.EllipsizeMode.END)
+            content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            glyph = Gtk.Label(label="!")
+            glyph.get_style_context().add_class("attention-glyph")
+            name = Gtk.Label(label=terminal.name, xalign=0)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            name.get_style_context().add_class("attention-name")
+            content.pack_start(glyph, False, False, 0)
+            content.pack_start(name, False, False, 0)
+            if project:
+                where = Gtk.Label(label=f"in {project.name}", xalign=0)
+                where.set_ellipsize(Pango.EllipsizeMode.END)
+                where.get_style_context().add_class("attention-project")
+                content.pack_start(where, True, True, 0)
             button = Gtk.Button()
-            button.add(label)
+            button.add(content)
             button.set_halign(Gtk.Align.FILL)
             button.get_style_context().add_class("attention-item")
             button.connect(
@@ -1443,19 +1612,6 @@ class MainWindow(
             self.attention_items.pack_start(button, False, False, 0)
         self.attention_items.show_all()
         self.attention_revealer.set_reveal_child(bool(self._attention_ids))
-        count = len(self._attention_ids)
-        self.header_attention_button.get_style_context().add_class(
-            "attention-button-active"
-        )
-        if count:
-            self.header_attention_button.set_label(f"{count} waiting")
-            self.header_attention_button.set_tooltip_text(
-                f"Jump to the next of {count} terminals waiting for input "
-                "(Ctrl+Shift+A)"
-            )
-            self.header_attention_button.show()
-        else:
-            self.header_attention_button.hide()
 
     def _sync_attention_notifications(
         self, attention_ids: list[str], terminals: dict[str, TerminalSession]
@@ -1509,13 +1665,7 @@ class MainWindow(
             application.withdraw_notification(attention_notification_id(terminal_id))
 
     def select_next_attention(self) -> None:
-        if not getattr(self, "_attention_ids", None):
-            return
-        try:
-            index = self._attention_ids.index(self.active_terminal_id)
-        except ValueError:
-            index = -1
-        self.select_terminal(self._attention_ids[(index + 1) % len(self._attention_ids)])
+        self.select_next_in_state("action")
 
     def _update_sidebar_stats(self, sessions: Optional[int] = None) -> None:
         if sessions is None:

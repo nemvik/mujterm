@@ -26,6 +26,7 @@ from .impact import (
 from .logging_config import record_runtime_error
 from .models import AgentStatus, TerminalSession, TerminalSnapshot
 from .search import literal_search_regex
+from .status_display import PILL_CLASSES, StatusPill, hud_status_pill, under_pressure
 from .tmux_backend import TmuxBackend
 
 
@@ -281,7 +282,7 @@ def quiet_radar_state(
         return "error"
     if snapshot.status == AgentStatus.NEEDS_ACTION:
         return "attention"
-    if snapshot.cpu_percent >= 85 or snapshot.memory_bytes >= 1536 * 1024 * 1024:
+    if under_pressure(snapshot):
         return "hot"
     if command_running or snapshot.status in (AgentStatus.WORKING, AgentStatus.UNKNOWN):
         return "working"
@@ -348,8 +349,7 @@ class TerminalView(Gtk.Box):
         self._rendered_command_block_ids: Optional[tuple[int, ...]] = None
         self._last_snapshot: Optional[TerminalSnapshot] = None
         self._radar_state = ""
-        self._radar_tooltip = ""
-        self._hud_agent_state: Optional[tuple[AgentStatus, Optional[str]]] = None
+        self._hud_pill: Optional[tuple[Optional[StatusPill], str]] = None
         self._radar_completion_active = False
         self._radar_completion_error = False
         self._radar_completion_timer_id: Optional[int] = None
@@ -1265,9 +1265,16 @@ class TerminalView(Gtk.Box):
         hud = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         hud.get_style_context().add_class("terminal-hud")
         hud.connect("size-allocate", self._hud_size_allocate)
-        self.radar_indicator = Gtk.Label(label="●")
-        self.radar_indicator.get_style_context().add_class("radar-indicator")
-        self.radar_indicator.set_tooltip_text("Idle")
+        # Quiet radar and agent state share one pill: the state in words,
+        # with a glyph so it never depends on colour alone.
+        self.hud_status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.hud_status.set_valign(Gtk.Align.CENTER)
+        self.hud_status.get_style_context().add_class("status-pill")
+        self.hud_status.set_no_show_all(True)
+        self.hud_status_glyph = Gtk.Label()
+        self.hud_status_label = Gtk.Label()
+        self.hud_status.pack_start(self.hud_status_glyph, False, False, 0)
+        self.hud_status.pack_start(self.hud_status_label, False, False, 0)
         self.hud_title = Gtk.Label(label=self.session.name, xalign=0)
         self.hud_title.set_ellipsize(Pango.EllipsizeMode.END)
         self.hud_title.set_max_width_chars(28)
@@ -1277,11 +1284,7 @@ class TerminalView(Gtk.Box):
         self.hud_path.get_style_context().add_class("terminal-hud-path")
         self.hud_branch = self._hud_label("terminal-hud-branch", 24)
         self.hud_services = self._hud_label("terminal-hud-services", 18)
-        self.hud_resources = self._hud_label("terminal-hud-resources", 18)
-        self.hud_agent = self._hud_label("status-shell", 22)
-        # Agent state is the most important fact in the header; the path and
-        # branch give way first.
-        self.hud_agent.set_ellipsize(Pango.EllipsizeMode.NONE)
+        self.hud_resources = self._hud_label("terminal-hud-resources", 24)
         self.command_blocks_button = Gtk.ToggleButton(label="Blocks")
         self.command_blocks_button.set_valign(Gtk.Align.CENTER)
         self.command_blocks_button.get_style_context().add_class(
@@ -1291,14 +1294,15 @@ class TerminalView(Gtk.Box):
             "Recent commands with exit status, output diff and changed files"
         )
         self.command_blocks_button.connect("toggled", self._toggle_command_blocks)
-        hud.pack_start(self.radar_indicator, False, False, 0)
         hud.pack_start(self.hud_title, False, False, 0)
         hud.pack_start(self.hud_path, True, True, 0)
         hud.pack_end(self.command_blocks_button, False, False, 0)
-        hud.pack_end(self.hud_agent, False, False, 0)
         hud.pack_end(self.hud_resources, False, False, 0)
         hud.pack_end(self.hud_services, False, False, 0)
         hud.pack_end(self.hud_branch, False, False, 0)
+        # The state is the most important fact in the header; the path and
+        # branch give way first, the pill never does.
+        hud.pack_end(self.hud_status, False, False, 0)
         self.pack_start(hud, False, False, 0)
 
     @staticmethod
@@ -1358,15 +1362,29 @@ class TerminalView(Gtk.Box):
         tooltip = detail
         if state != self._radar_state:
             self._radar_state = state
-            class_name = f"radar-{state}"
-            for widget in (self.terminal_shell, self.radar_indicator):
-                context = widget.get_style_context()
-                for candidate in RADAR_CLASSES:
-                    context.remove_class(candidate)
-                context.add_class(class_name)
-        if tooltip != self._radar_tooltip:
-            self._radar_tooltip = tooltip
-            self.radar_indicator.set_tooltip_text(tooltip)
+            context = self.terminal_shell.get_style_context()
+            for candidate in RADAR_CLASSES:
+                context.remove_class(candidate)
+            context.add_class(f"radar-{state}")
+        pill = hud_status_pill(state, snapshot)
+        if (pill, tooltip) != self._hud_pill:
+            self._hud_pill = (pill, tooltip)
+            self._show_hud_pill(pill, tooltip)
+
+    def _show_hud_pill(self, pill: Optional[StatusPill], tooltip: str) -> None:
+        context = self.hud_status.get_style_context()
+        for candidate in PILL_CLASSES:
+            context.remove_class(candidate)
+        if pill is None:
+            self._set_responsive_visibility(self.hud_status, False)
+            return
+        context.add_class(pill.css_class)
+        self.hud_status_glyph.set_text(pill.glyph)
+        self.hud_status_glyph.set_visible(bool(pill.glyph))
+        self.hud_status_label.set_text(pill.label)
+        self.hud_status_label.show()
+        self.hud_status.set_tooltip_text(tooltip)
+        self._set_responsive_visibility(self.hud_status, True)
 
     def _observe_command_impact(self, snapshot: TerminalSnapshot) -> None:
         block = self._pending_command_block
@@ -1416,7 +1434,6 @@ class TerminalView(Gtk.Box):
         if title and self.hud_title.get_text() != title:
             self.hud_title.set_text(title)
         if not snapshot:
-            self._update_hud_agent(None)
             return
         path = display_path(snapshot.cwd)
         if self.hud_path.get_text() != path:
@@ -1431,7 +1448,6 @@ class TerminalView(Gtk.Box):
         self._set_hud_text(
             self.hud_services, ports, "Listening on localhost " + ports if ports else None
         )
-        self._update_hud_agent(snapshot)
 
     def _set_hud_text(
         self, label: Gtk.Label, text: str, tooltip: Optional[str] = None
@@ -1445,45 +1461,6 @@ class TerminalView(Gtk.Box):
         elif label.get_parent() is not None:
             # Re-evaluate the width thresholds now that there is content.
             label.get_parent().queue_resize()
-
-    def _update_hud_agent(
-        self, snapshot: Optional[TerminalSnapshot]
-    ) -> None:
-        state = (snapshot.status, snapshot.agent.value if snapshot.agent else None) if snapshot else None
-        if state == self._hud_agent_state:
-            return
-        self._hud_agent_state = state
-        if snapshot is None or (
-            snapshot.status == AgentStatus.SHELL and not snapshot.agent
-        ):
-            self.hud_agent.set_text("")
-            self._set_responsive_visibility(self.hud_agent, False)
-            return
-        context = self.hud_agent.get_style_context()
-        for class_name in ("status-working", "status-action", "status-ready", "status-error", "status-shell"):
-            context.remove_class(class_name)
-        agent = snapshot.agent.value.title() if snapshot.agent else "Shell"
-        if snapshot.status == AgentStatus.WORKING:
-            context.add_class("status-working")
-            text = f"◌ {agent} working"
-        elif snapshot.status == AgentStatus.NEEDS_ACTION:
-            context.add_class("status-action")
-            text = f"! {agent} needs input"
-        elif snapshot.status == AgentStatus.READY:
-            context.add_class("status-ready")
-            text = f"● {agent} ready"
-        elif snapshot.status in (AgentStatus.ERROR, AgentStatus.ENDED):
-            context.add_class("status-error")
-            text = f"× {agent} {'ended' if snapshot.status == AgentStatus.ENDED else 'failed'}"
-        elif snapshot.status == AgentStatus.UNKNOWN:
-            context.add_class("status-working")
-            text = f"◌ {agent} connecting"
-        else:
-            context.add_class("status-shell")
-            text = agent
-        self.hud_agent.set_text(text)
-        self.hud_agent.set_tooltip_text(text)
-        self._set_responsive_visibility(self.hud_agent, True)
 
     def _apply_terminal_palette(self) -> None:
         palette = [self._color(value) for value in ANSI_PALETTE]
