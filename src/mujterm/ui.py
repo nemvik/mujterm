@@ -9,7 +9,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from .agent_tools import AgentToolsMixin
 from .database import Database
@@ -23,6 +23,7 @@ from .metadata import (
     remove_agent_state,
 )
 from .models import (
+    AgentKind,
     AgentStatus,
     SshConnection,
     TerminalSession,
@@ -87,6 +88,18 @@ __all__ = [
     "terminal_output_delta",
     "without_trailing_prompt",
 ]
+
+
+def attention_notification_id(terminal_id: str) -> str:
+    return f"attention-{terminal_id}"
+
+
+def attention_notification_text(
+    agent: Optional[AgentKind], terminal_name: str, project_name: Optional[str]
+) -> tuple[str, str]:
+    who = agent.value.title() if agent else "An agent"
+    body = f"{project_name} · {terminal_name}" if project_name else terminal_name
+    return f"{who} is waiting for input", body
 
 
 CSS = b"""
@@ -358,6 +371,10 @@ class MainWindow(
         self._status_overrides: dict[str, AgentStatus] = {}
         self._attention_ids: list[str] = []
         self._attention_signature: Optional[tuple[str, ...]] = None
+        # Terminals already waiting when a snapshot arrives; None until the
+        # first snapshot so agents waiting at startup are not announced.
+        self._attention_notification_baseline: Optional[set[str]] = None
+        self._notified_attention: set[str] = set()
         self._sidebar_stats: Optional[tuple[int, int]] = None
         self.get_style_context().add_class("mujterm-window")
         self.set_default_size(1100, 700)
@@ -377,6 +394,8 @@ class MainWindow(
 
     def shutdown(self) -> None:
         self._closing = True
+        for terminal_id in tuple(self._notified_attention):
+            self._withdraw_attention_notification(terminal_id)
         if self._snapshot_timer_id is not None:
             GLib.source_remove(self._snapshot_timer_id)
             self._snapshot_timer_id = None
@@ -834,6 +853,7 @@ class MainWindow(
         terminal = self.database.get_terminal(terminal_id)
         if not terminal:
             return
+        self._withdraw_attention_notification(terminal_id)
         self.active_terminal_id = terminal_id
         self.active_project_id = terminal.project_id
         view = self._ensure_terminal_view(terminal)
@@ -928,6 +948,7 @@ class MainWindow(
         terminal = self.database.get_terminal(terminal_id)
         if not terminal:
             return
+        self._withdraw_attention_notification(terminal_id)
         self.active_terminal_id = terminal_id
         self.active_project_id = terminal.project_id
         self.active_workspace_id = self.terminal_workspaces.get(terminal_id)
@@ -1395,6 +1416,7 @@ class MainWindow(
                 terminal_id, self.snapshots[terminal_id].status
             ) == AgentStatus.NEEDS_ACTION
         ]
+        self._sync_attention_notifications(attention_ids, terminals)
         signature = tuple(attention_ids)
         if signature == self._attention_signature:
             self._attention_ids = attention_ids
@@ -1434,6 +1456,57 @@ class MainWindow(
             self.header_attention_button.show()
         else:
             self.header_attention_button.hide()
+
+    def _sync_attention_notifications(
+        self, attention_ids: list[str], terminals: dict[str, TerminalSession]
+    ) -> None:
+        """Notify about agents that start waiting while the window is unfocused."""
+        current = set(attention_ids)
+        previous = self._attention_notification_baseline
+        if previous is None and not self.snapshots:
+            # The window is built before the first snapshot; wait for real
+            # state so agents already waiting at startup become the baseline.
+            return
+        self._attention_notification_baseline = current
+        for terminal_id in self._notified_attention - current:
+            self._withdraw_attention_notification(terminal_id)
+        if previous is None or self.is_active():
+            return
+        application = self.get_application()
+        if application is None:
+            return
+        for terminal_id in attention_ids:
+            if terminal_id in previous:
+                continue
+            terminal = terminals[terminal_id]
+            snapshot = self.snapshots.get(terminal_id)
+            project = (
+                self.database.get_project(terminal.project_id)
+                if terminal.project_id
+                else None
+            )
+            title, body = attention_notification_text(
+                snapshot.agent if snapshot else None,
+                terminal.name,
+                project.name if project else None,
+            )
+            notification = Gio.Notification.new(title)
+            notification.set_body(body)
+            notification.set_default_action_and_target(
+                "app.show-terminal", GLib.Variant.new_string(terminal_id)
+            )
+            application.send_notification(
+                attention_notification_id(terminal_id), notification
+            )
+            self._notified_attention.add(terminal_id)
+
+    def _withdraw_attention_notification(self, terminal_id: str) -> None:
+        if terminal_id not in self._notified_attention:
+            return
+        self._notified_attention.discard(terminal_id)
+        application = self.get_application()
+        if application is not None:
+            application.withdraw_notification(attention_notification_id(terminal_id))
 
     def select_next_attention(self) -> None:
         if not getattr(self, "_attention_ids", None):

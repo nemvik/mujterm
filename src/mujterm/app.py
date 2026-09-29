@@ -6,7 +6,7 @@ from typing import Optional
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, Gtk  # noqa: E402
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 from .agent_listener import AgentSocketListener
 from .database import Database, DatabaseError
@@ -53,6 +53,9 @@ class MujTermApplication(Gtk.Application):
         action.connect("activate", lambda *_args: self.quit())
         self.add_action(action)
         self.set_accels_for_action("app.quit", ["<Primary>q"])
+        show_terminal = Gio.SimpleAction.new("show-terminal", GLib.VariantType.new("s"))
+        show_terminal.connect("activate", self._show_terminal)
+        self.add_action(show_terminal)
 
     def do_activate(self) -> None:
         if self.window:
@@ -97,6 +100,14 @@ class MujTermApplication(Gtk.Application):
         if self.database:
             self.database.close()
         Gtk.Application.do_shutdown(self)
+
+    def _show_terminal(
+        self, _action: Optional[Gio.SimpleAction], parameter: GLib.Variant
+    ) -> None:
+        """Open the terminal named by a clicked attention notification."""
+        if self.window:
+            self.window.present()
+            self.window.select_terminal(parameter.get_string())
 
     def _agent_event(self, payload: dict[str, object]) -> None:
         if self.window:

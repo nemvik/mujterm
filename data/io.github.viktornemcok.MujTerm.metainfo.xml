@@ -17,6 +17,11 @@
     <binary>mujterm</binary>
   </provides>
   <releases>
+    <release version="0.1.7" date="2026-09-29">
+      <description>
+        <p>Shows a desktop notification when an agent starts waiting for input while MujTerm is in the background.</p>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-09-24">
       <description>
         <p>Lets the window shrink again, fixes adding saved commands, adopts a calmer native look, and removes the service map, agent handoff and project timeline.</p>

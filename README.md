@@ -16,6 +16,7 @@ an isolated tmux server so terminal processes survive closing the window.
 - Live current-directory and Git branch labels.
 - Live per-session CPU and resident-memory totals for the complete process tree.
 - Attention queue for agents waiting on input, with one-key navigation.
+- Desktop notifications when an agent starts waiting while MujTerm is in the background.
 - Local service radar with clickable listening ports and process controls.
 - Codex ↔ Claude solution races on isolated Git branches and worktrees, with a comparison dashboard.
 - One-click terminal switching, duplication from the live working directory, and closing.
@@ -51,6 +52,12 @@ Open the main menu (☰) → **Agent Integrations…** and choose **Enable**. Mu
 handlers into the existing Claude Code and Codex hook configuration after making
 a timestamped backup. The handlers only become active for processes inheriting a
 `MUJTERM_TERMINAL_ID`, so agents launched in other terminals are ignored.
+
+When an agent starts waiting for input while the MujTerm window is not focused,
+a desktop notification names the agent, project, and terminal; clicking it opens
+that terminal. The notification is withdrawn as soon as you view the terminal or
+the agent continues. Agents already waiting when MujTerm starts are not
+announced. Notifications can be turned off in the desktop notification settings.
 
 Codex requires one additional safety step: launch Codex in MujTerm, enter
 `/hooks`, review the MujTerm command, and trust it. Integrations can be removed
@@ -180,5 +187,5 @@ make deb
 The compatibility smoke test drives a real isolated tmux client and verifies
 that `htop` receives both F10 and its clickable Quit control.
 
-The Debian package is written to `dist/mujterm_0.1.6_all.deb`. To rebuild,
+The Debian package is written to `dist/mujterm_0.1.7_all.deb`. To rebuild,
 verify, and reinstall the current source in one step, run `make reinstall`.
